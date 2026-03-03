@@ -4155,6 +4155,10 @@ def render_auth_screen() -> None:
                     password = st.text_input("Password", type="password", key="signup_password")
                 with password_status_col:
                     st.markdown("<div style='height:1.9rem;'></div>", unsafe_allow_html=True)
+                    st.markdown(
+                        "<div style='font-size:0.82rem;color:#334155;font-weight:700;'>we care about you</div>",
+                        unsafe_allow_html=True,
+                    )
                     password_policy = get_password_policy_status(password)
                     for is_ok, label in [
                         (password_policy["min_length"], "8+ characters"),
