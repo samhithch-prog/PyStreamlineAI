@@ -4161,7 +4161,9 @@ def render_auth_screen() -> None:
                 with password_status_col:
                     st.markdown("<div style='height:1.9rem;'></div>", unsafe_allow_html=True)
                     password_policy = get_password_policy_status(password)
-                    password_started = bool(str(password or ""))
+                    password_started = bool(str(password or "").strip()) or bool(
+                        str(confirm_password or "").strip()
+                    )
                     if password_started:
                         st.markdown(
                             "<div style='font-size:0.82rem;color:#334155;font-weight:700;'>we care about you</div>",
