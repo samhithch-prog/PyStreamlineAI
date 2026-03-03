@@ -1049,6 +1049,39 @@ def clear_pending_email_verification() -> None:
     st.session_state.email_verification_mode = ""
 
 
+def normalize_auth_view(raw_value: str) -> str:
+    cleaned = str(raw_value or "").strip().lower()
+    if cleaned in {"create account", "create_account", "signup", "sign up", "register"}:
+        return "Create Account"
+    return "Login"
+
+
+def auth_view_to_query_value(auth_view: str) -> str:
+    return "signup" if normalize_auth_view(auth_view) == "Create Account" else "login"
+
+
+def read_auth_view_from_query_params() -> str:
+    try:
+        raw_value = st.query_params.get("auth", "")
+        if isinstance(raw_value, (list, tuple)):
+            raw_value = raw_value[0] if raw_value else ""
+        return normalize_auth_view(str(raw_value or ""))
+    except Exception:
+        return "Login"
+
+
+def sync_auth_view_query_param(auth_view: str) -> None:
+    target = auth_view_to_query_value(auth_view)
+    try:
+        current = st.query_params.get("auth", "")
+        if isinstance(current, (list, tuple)):
+            current = current[0] if current else ""
+        if str(current or "").strip().lower() != target:
+            st.query_params["auth"] = target
+    except Exception:
+        pass
+
+
 def send_email_verification_otp(user_id: int, email: str) -> tuple[bool, str]:
     cleaned_email = str(email or "").strip().lower()
     if user_id <= 0 or not cleaned_email:
@@ -3876,6 +3909,7 @@ def render_email_verification_panel() -> None:
             st.session_state.signup_success_message = ""
             st.session_state.signup_warning_message = ""
             st.session_state.auth_notice_message = verify_msg
+            st.session_state.auth_view_selector = "Login"
             st.rerun()
         else:
             st.error(verify_msg)
@@ -3997,9 +4031,18 @@ def render_auth_screen() -> None:
         if auth_notice_message:
             st.success(auth_notice_message)
             st.session_state.auth_notice_message = ""
-        tab_login, tab_signup = st.tabs(["Login", "Create Account"])
+        if "auth_view_selector" not in st.session_state:
+            st.session_state.auth_view_selector = read_auth_view_from_query_params()
+        auth_view = st.radio(
+            "Auth View",
+            options=["Login", "Create Account"],
+            key="auth_view_selector",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+        sync_auth_view_query_param(auth_view)
 
-        with tab_login:
+        if auth_view == "Login":
             with st.form("login_form"):
                 email = st.text_input("Email")
                 password = st.text_input("Password", type="password")
@@ -4064,7 +4107,7 @@ def render_auth_screen() -> None:
                         st.rerun()
                     st.error("Invalid email or password.")
 
-        with tab_signup:
+        else:
             signup_success_message = str(st.session_state.get("signup_success_message", "")).strip()
             signup_warning_message = str(st.session_state.get("signup_warning_message", "")).strip()
             if signup_success_message:
