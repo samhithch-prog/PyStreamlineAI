@@ -780,6 +780,10 @@ def create_or_update_signup_verification_request(
     profile_payload = json.dumps(cleaned_profile, separators=(",", ":")) if cleaned_profile else None
     normalized_promo = normalize_promo_code(promo_code)
 
+    password_ok, password_msg = validate_password_strength(password)
+    if not password_ok:
+        return False, password_msg, 0
+
     if user_exists_for_signup(cleaned_email, cleaned_role_contact_email):
         return False, "User exists, please login.", 0
 
@@ -1225,6 +1229,17 @@ def normalize_profile_text(raw_value: Any, max_len: int = 160) -> str:
     return str(raw_value or "").strip()[:max_len]
 
 
+def validate_password_strength(password: str) -> tuple[bool, str]:
+    raw_password = str(password or "")
+    if len(raw_password) < 8:
+        return False, "Password must be at least 8 characters long."
+    if re.search(r"[A-Z]", raw_password) is None:
+        return False, "Password must include at least one uppercase letter."
+    if re.search(r"[^\w\s]", raw_password) is None:
+        return False, "Password must include at least one special character (for example: @ or %)."
+    return True, ""
+
+
 def validate_role_profile_inputs(
     role: str,
     years_experience: str,
@@ -1474,8 +1489,9 @@ def create_user(
 ) -> tuple[bool, str]:
     if confirm_password is not None and password != confirm_password:
         return False, "Passwords do not match."
-    if len(password.strip()) < 8:
-        return False, "Password must be at least 8 characters long."
+    password_ok, password_msg = validate_password_strength(password)
+    if not password_ok:
+        return False, password_msg
     normalized_role = str(role or "").strip().title()
     if normalized_role not in {"Candidate", "Student", "Recruiter"}:
         return False, "Please choose Candidate, Student, or Recruiter."
@@ -4142,6 +4158,7 @@ def render_auth_screen() -> None:
                             "</span>",
                             unsafe_allow_html=True,
                         )
+                st.caption("Password must be at least 8 characters, include one uppercase letter, and one special character (for example: @ or %).")
                 submit_signup = st.button("Create Account", key="signup_submit_btn")
                 if submit_signup:
                     cleaned_first_name = str(first_name or "").strip()
@@ -4149,6 +4166,7 @@ def render_auth_screen() -> None:
                     cleaned_email = str(email or "").strip()
                     cleaned_password = str(password or "")
                     cleaned_confirm_password = str(confirm_password or "")
+                    password_ok, password_msg = validate_password_strength(cleaned_password)
                     full_name = " ".join(
                         part for part in [cleaned_first_name, cleaned_last_name] if part
                     )
@@ -4178,6 +4196,8 @@ def render_auth_screen() -> None:
                         st.error(f"Required: {', '.join(missing_fields)}.")
                     elif cleaned_password != cleaned_confirm_password:
                         st.error("Passwords do not match.")
+                    elif not password_ok:
+                        st.error(password_msg)
                     elif not email_ok:
                         st.error(email_msg)
                     elif not role_email_ok:
