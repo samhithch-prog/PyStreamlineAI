@@ -4183,7 +4183,17 @@ def render_auth_screen() -> None:
                             "</span>",
                             unsafe_allow_html=True,
                         )
-                submit_signup = st.button("Create Account", key="signup_submit_btn")
+                password_policy_ok = bool(
+                    password_policy["min_length"]
+                    and password_policy["has_upper"]
+                    and password_policy["has_special"]
+                )
+                passwords_match = bool(password) and bool(confirm_password) and password == confirm_password
+                submit_signup = st.button(
+                    "Create Account",
+                    key="signup_submit_btn",
+                    disabled=not (password_policy_ok and passwords_match),
+                )
                 if submit_signup:
                     cleaned_first_name = str(first_name or "").strip()
                     cleaned_last_name = str(last_name or "").strip()
