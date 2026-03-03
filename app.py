@@ -4165,17 +4165,32 @@ def render_auth_screen() -> None:
                         unsafe_allow_html=True,
                     )
                     password_policy = get_password_policy_status(password)
-                    for is_ok, label in [
-                        (password_policy["min_length"], "8+ characters"),
-                        (password_policy["has_upper"], "1 uppercase letter"),
-                        (password_policy["has_special"], "1 special character"),
-                    ]:
-                        icon = "&#10003;" if is_ok else "&#10007;"
-                        color = "#16a34a" if is_ok else "#dc2626"
+                    password_started = bool(str(password or ""))
+                    if not password_started:
                         st.markdown(
-                            f"<div style='font-size:0.82rem;color:{color};font-weight:600;'>{icon} {label}</div>",
+                            "<div style='font-size:0.82rem;color:#64748b;font-weight:600;'>Start typing to see live checks</div>",
                             unsafe_allow_html=True,
                         )
+                    else:
+                        for is_ok, label in [
+                            (password_policy["min_length"], "8+ characters"),
+                            (password_policy["has_upper"], "1 uppercase letter"),
+                            (password_policy["has_special"], "1 special character"),
+                        ]:
+                            icon = "&#10003;" if is_ok else "&#10007;"
+                            color = "#16a34a" if is_ok else "#dc2626"
+                            st.markdown(
+                                f"<div style='font-size:0.82rem;color:{color};font-weight:600;'>{icon} {label}</div>",
+                                unsafe_allow_html=True,
+                            )
+                        if confirm_password:
+                            match_ok = password == confirm_password
+                            match_icon = "&#10003;" if match_ok else "&#10007;"
+                            match_color = "#16a34a" if match_ok else "#dc2626"
+                            st.markdown(
+                                f"<div style='font-size:0.82rem;color:{match_color};font-weight:600;'>{match_icon} passwords match</div>",
+                                unsafe_allow_html=True,
+                            )
                     if password and confirm_password and password != confirm_password:
                         st.markdown(
                             "<span style='color:#dc2626;font-size:0.86rem;font-weight:600;'>"
