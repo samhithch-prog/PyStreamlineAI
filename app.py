@@ -4160,18 +4160,13 @@ def render_auth_screen() -> None:
                     )
                 with password_status_col:
                     st.markdown("<div style='height:1.9rem;'></div>", unsafe_allow_html=True)
-                    st.markdown(
-                        "<div style='font-size:0.82rem;color:#334155;font-weight:700;'>we care about you</div>",
-                        unsafe_allow_html=True,
-                    )
                     password_policy = get_password_policy_status(password)
                     password_started = bool(str(password or ""))
-                    if not password_started:
+                    if password_started:
                         st.markdown(
-                            "<div style='font-size:0.82rem;color:#64748b;font-weight:600;'>Start typing to see live checks</div>",
+                            "<div style='font-size:0.82rem;color:#334155;font-weight:700;'>we care about you</div>",
                             unsafe_allow_html=True,
                         )
-                    else:
                         for is_ok, label in [
                             (password_policy["min_length"], "8+ characters"),
                             (password_policy["has_upper"], "1 uppercase letter"),
