@@ -963,11 +963,6 @@ def create_verified_user_from_signup_request(request: dict[str, Any]) -> tuple[b
     finally:
         conn.close()
 
-    promo_code = normalize_promo_code(str(request.get("promo_code", "")).strip())
-    if promo_code:
-        redeemed, redeem_msg = redeem_promo_code(promo_code, email)
-        if not redeemed:
-            return True, f"Email verified. Login ready. Promo note: {redeem_msg}"
     return True, "Email verified and account created. You can now log in."
 
 
@@ -1029,6 +1024,13 @@ def verify_signup_verification_otp(request_id: int, email: str, otp_code: str) -
     finally:
         conn.close()
     return True, created_msg
+
+
+def promo_codes_enabled() -> bool:
+    return parse_bool(
+        get_config_value("PROMO_CODES_ENABLED", "promo", "enabled", "false"),
+        default=False,
+    )
 
 
 def mark_pending_email_verification(ref_id: int, email: str, mode: str = "signup_request") -> None:
@@ -3770,6 +3772,7 @@ def init_state() -> None:
         "signup_success_message": "",
         "signup_warning_message": "",
         "signup_form_reset_pending": False,
+        "auth_notice_message": "",
         "email_verification_ref_id": 0,
         "email_verification_email": "",
         "email_verification_mode": "",
@@ -3847,7 +3850,8 @@ def render_email_verification_panel() -> None:
             clear_pending_email_verification()
             st.session_state.signup_success_message = ""
             st.session_state.signup_warning_message = ""
-            st.success(verify_msg)
+            st.session_state.auth_notice_message = verify_msg
+            st.rerun()
         else:
             st.error(verify_msg)
 
@@ -3920,49 +3924,54 @@ def render_auth_screen() -> None:
                             st.error(f"LinkedIn OAuth login setup issue: {ex}")
                     if not linkedin_available:
                         st.caption("LinkedIn OAuth is not configured yet.")
-                    with st.container(key="oauth_promo_code"):
-                        promo_input_col, promo_send_col = st.columns([5, 1], gap="small")
-                        with promo_input_col:
-                            promo_code_text = st.text_input(
-                                "Have a promo code",
-                                key="auth_promo_code",
-                                placeholder="Have a promo code",
-                                label_visibility="collapsed",
+                    if promo_codes_enabled():
+                        with st.container(key="oauth_promo_code"):
+                            promo_input_col, promo_send_col = st.columns([5, 1], gap="small")
+                            with promo_input_col:
+                                promo_code_text = st.text_input(
+                                    "Have a promo code",
+                                    key="auth_promo_code",
+                                    placeholder="Have a promo code",
+                                    label_visibility="collapsed",
+                                )
+
+                            normalized_current = normalize_promo_code(promo_code_text)
+                            checked_code = normalize_promo_code(
+                                str(st.session_state.get("auth_promo_checked_code", ""))
                             )
+                            if normalized_current != checked_code:
+                                st.session_state.auth_promo_valid = False
+                                st.session_state.auth_promo_status = ""
 
-                        normalized_current = normalize_promo_code(promo_code_text)
-                        checked_code = normalize_promo_code(
-                            str(st.session_state.get("auth_promo_checked_code", ""))
-                        )
-                        if normalized_current != checked_code:
-                            st.session_state.auth_promo_valid = False
-                            st.session_state.auth_promo_status = ""
+                            with promo_send_col:
+                                apply_promo = st.button(
+                                    "\u2192",
+                                    key="oauth_promo_send",
+                                    help="Apply promo code",
+                                    use_container_width=True,
+                                )
 
-                        with promo_send_col:
-                            apply_promo = st.button(
-                                "\u2192",
-                                key="oauth_promo_send",
-                                help="Apply promo code",
-                                use_container_width=True,
-                            )
+                            if apply_promo:
+                                ok_promo, promo_msg, normalized_code = validate_promo_code(promo_code_text)
+                                st.session_state.auth_promo_valid = ok_promo
+                                st.session_state.auth_promo_status = promo_msg
+                                st.session_state.auth_promo_checked_code = normalized_code
 
-                        if apply_promo:
-                            ok_promo, promo_msg, normalized_code = validate_promo_code(promo_code_text)
-                            st.session_state.auth_promo_valid = ok_promo
-                            st.session_state.auth_promo_status = promo_msg
-                            st.session_state.auth_promo_checked_code = normalized_code
-
-                        promo_status_text = str(st.session_state.get("auth_promo_status", "")).strip()
-                        if promo_status_text:
-                            if bool(st.session_state.get("auth_promo_valid")):
-                                st.success(promo_status_text)
-                            else:
-                                st.error(promo_status_text)
+                            promo_status_text = str(st.session_state.get("auth_promo_status", "")).strip()
+                            if promo_status_text:
+                                if bool(st.session_state.get("auth_promo_valid")):
+                                    st.success(promo_status_text)
+                                else:
+                                    st.error(promo_status_text)
         else:
             st.info("Google OAuth is not configured yet. Use login or create account on the right.")
 
     with account_col:
         st.caption("Create an account or log in to start resume-job matching.")
+        auth_notice_message = str(st.session_state.get("auth_notice_message", "")).strip()
+        if auth_notice_message:
+            st.success(auth_notice_message)
+            st.session_state.auth_notice_message = ""
         tab_login, tab_signup = st.tabs(["Login", "Create Account"])
 
         with tab_login:
@@ -4184,44 +4193,33 @@ def render_auth_screen() -> None:
                         if not role_profile_ok:
                             st.error(role_profile_msg)
                         else:
-                            promo_to_redeem = normalize_promo_code(st.session_state.get("auth_promo_code", ""))
-                            promo_ok = True
-                            if promo_to_redeem:
-                                promo_ok, promo_msg, normalized_code = validate_promo_code(promo_to_redeem)
-                                st.session_state.auth_promo_valid = promo_ok
-                                st.session_state.auth_promo_status = promo_msg
-                                st.session_state.auth_promo_checked_code = normalized_code
-                                if not promo_ok:
-                                    st.error(promo_msg)
-
-                            if promo_ok:
-                                request_ok, request_msg, request_id = create_or_update_signup_verification_request(
-                                    full_name,
+                            request_ok, request_msg, request_id = create_or_update_signup_verification_request(
+                                full_name,
+                                cleaned_email,
+                                cleaned_password,
+                                role,
+                                normalized_years,
+                                role_contact_email=role_contact_email,
+                                profile_data=cleaned_profile_data,
+                                promo_code="",
+                            )
+                            if not request_ok:
+                                st.error(request_msg)
+                            else:
+                                mark_pending_email_verification(
+                                    request_id,
                                     cleaned_email,
-                                    cleaned_password,
-                                    role,
-                                    normalized_years,
-                                    role_contact_email=role_contact_email,
-                                    profile_data=cleaned_profile_data,
-                                    promo_code=promo_to_redeem,
+                                    mode="signup_request",
                                 )
-                                if not request_ok:
-                                    st.error(request_msg)
-                                else:
-                                    mark_pending_email_verification(
-                                        request_id,
-                                        cleaned_email,
-                                        mode="signup_request",
-                                    )
-                                    sent, otp_msg = send_signup_verification_otp(request_id, cleaned_email)
-                                    st.session_state.signup_success_message = (
-                                        "Verification code sent. Enter OTP below to finish account creation."
-                                    )
-                                    st.session_state.signup_warning_message = ""
-                                    if not sent:
-                                        st.session_state.signup_warning_message = otp_msg
-                                    clear_signup_form_state()
-                                    st.rerun()
+                                sent, otp_msg = send_signup_verification_otp(request_id, cleaned_email)
+                                st.session_state.signup_success_message = (
+                                    "Verification code sent. Enter OTP below to finish account creation."
+                                )
+                                st.session_state.signup_warning_message = ""
+                                if not sent:
+                                    st.session_state.signup_warning_message = otp_msg
+                                clear_signup_form_state()
+                                st.rerun()
 
         render_email_verification_panel()
 

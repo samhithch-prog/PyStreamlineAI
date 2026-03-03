@@ -33,8 +33,8 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
 5. Optional OAuth login (recommended for refresh-persistent login):
    - Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`
    - Fill `cookie_secret` and provider credentials (`[auth.google]` and/or `[auth.linkedin]`)
-   - Optional promo codes (validated by backend):
-     - Add `[promo]` with `valid_codes = ["CODE1", "CODE2"]`
+   - Optional promo codes (disabled by default):
+     - Set `[promo].enabled = true` and add `valid_codes = ["CODE1", "CODE2"]`
    - For LinkedIn app setup:
      - In LinkedIn Developer portal, enable **Sign In with LinkedIn using OpenID Connect**
      - Add your redirect URL to the app (must match `auth.redirect_uri` exactly)
