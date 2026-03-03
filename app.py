@@ -3029,14 +3029,15 @@ def init_state() -> None:
         "auth_promo_checked_code": "",
         "signup_success_message": "",
         "signup_warning_message": "",
+        "signup_form_reset_pending": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-def clear_signup_form_state() -> None:
-    text_keys = [
+def get_signup_form_text_keys() -> list[str]:
+    return [
         "signup_first_name",
         "signup_last_name",
         "signup_email",
@@ -3053,15 +3054,28 @@ def clear_signup_form_state() -> None:
         "signup_recruiter_title",
         "signup_hiring_focus",
     ]
-    for key in text_keys:
-        st.session_state[key] = ""
+
+
+def clear_signup_form_state() -> None:
+    # Reset after rerun to avoid mutating widget state after instantiation.
+    st.session_state.signup_form_reset_pending = True
+
+
+def apply_pending_signup_form_reset() -> None:
+    if not bool(st.session_state.get("signup_form_reset_pending")):
+        return
+    for key in get_signup_form_text_keys():
+        if key in st.session_state:
+            st.session_state[key] = ""
     st.session_state.signup_role_selector = "Candidate"
+    st.session_state.signup_form_reset_pending = False
 
 
 def render_auth_screen() -> None:
     render_zoswi_outside_minimize_listener(False)
     render_top_left_logo()
     st.title("Resume AI Checker")
+    apply_pending_signup_form_reset()
 
     oauth_col, account_col = st.columns(2, gap="large")
 
