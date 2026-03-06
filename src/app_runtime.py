@@ -4230,7 +4230,7 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
                     )
                 with signed_cols[1]:
                     with st.container(key="sidebar_header_logout"):
-                        if st.button("Logout", key="sidebar_header_logout_btn", help="Logout"):
+                        if st.button("Sign out", key="sidebar_header_logout_btn", help="Sign out"):
                             logout_current_user()
                             st.rerun()
             with st.container(key="sidebar_menu_toggle"):
