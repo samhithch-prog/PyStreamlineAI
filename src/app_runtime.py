@@ -3889,7 +3889,7 @@ def render_auth_screen() -> None:
                             password = st.text_input("Password", type="password")
                             open_reset = False
                             with st.container(key="login_forgot_row"):
-                                forgot_label_col, forgot_reset_col = st.columns([7, 3], gap="small")
+                                forgot_label_col, forgot_reset_col = st.columns([8, 2], gap="small")
                                 with forgot_label_col:
                                     st.markdown(
                                         '<div class="auth-forgot-label">Don\'t remember your password?</div>',
@@ -3898,7 +3898,7 @@ def render_auth_screen() -> None:
                                 with forgot_reset_col:
                                     with st.container(key="login_forgot_reset_btn"):
                                         open_reset = st.form_submit_button(
-                                            "Reset ↺",
+                                            "Reset",
                                             use_container_width=False,
                                         )
                             with st.container(key="login_actions"):
@@ -4230,7 +4230,12 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
                     )
                 with signed_cols[1]:
                     with st.container(key="sidebar_header_logout"):
-                        if st.button("Sign out", key="sidebar_header_logout_btn", help="Sign out"):
+                        if st.button(
+                            " ",
+                            key="sidebar_header_logout_btn",
+                            help="Sign out",
+                            icon=":material/logout:",
+                        ):
                             logout_current_user()
                             st.rerun()
             with st.container(key="sidebar_menu_toggle"):

@@ -224,29 +224,31 @@ def render_app_styles() -> None:
         .st-key-login_forgot_reset_btn .stButton > button,
         .st-key-login_forgot_reset_btn button,
         .st-key-login_forgot_reset_btn [data-testid^="baseButton"] {
-            border: 1px solid rgba(14, 165, 233, 0.4) !important;
-            background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(34, 211, 238, 0.2)) !important;
-            color: #0f172a !important;
-            min-height: 1.45rem !important;
-            height: 1.45rem !important;
-            padding: 0.02rem 0.52rem !important;
-            font-size: 0.66rem !important;
+            border: 0 !important;
+            background: transparent !important;
+            color: #0284c7 !important;
+            min-height: 1rem !important;
+            height: 1rem !important;
+            padding: 0 0.08rem !important;
+            font-size: 0.68rem !important;
             font-weight: 700 !important;
-            text-decoration: none !important;
-            border-radius: 999px !important;
-            justify-content: center !important;
-            box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03) !important;
-            transition: transform 130ms ease, border-color 130ms ease, box-shadow 130ms ease !important;
+            text-decoration: underline !important;
+            text-underline-offset: 1px !important;
+            border-radius: 0 !important;
+            justify-content: flex-end !important;
+            box-shadow: none !important;
+            transition: color 130ms ease, transform 130ms ease, text-shadow 130ms ease !important;
         }
         .st-key-login_forgot_reset_btn .stButton > button:hover,
         .st-key-login_forgot_reset_btn button:hover,
         .st-key-login_forgot_reset_btn [data-testid^="baseButton"]:hover {
-            color: #0f172a !important;
-            text-decoration: none !important;
-            background: linear-gradient(135deg, rgba(14, 165, 233, 0.2), rgba(34, 211, 238, 0.28)) !important;
-            border-color: rgba(8, 145, 178, 0.65) !important;
-            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.18) !important;
-            transform: translateY(-1px) !important;
+            color: #06b6d4 !important;
+            text-decoration: underline !important;
+            background: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+            text-shadow: 0 0 8px rgba(14, 165, 233, 0.25) !important;
+            transform: translateX(2px) !important;
         }
         .st-key-login_submit_btn button,
         .st-key-login_submit_btn [data-testid="baseButton-primary"] {
@@ -679,17 +681,19 @@ def render_app_styles() -> None:
             background-color: #fff1f2 !important;
             box-shadow: 0 5px 14px rgba(225, 29, 72, 0.2) !important;
             border-radius: 999px !important;
-            min-height: 1.7rem !important;
-            min-width: 0 !important;
-            padding: 0.14rem 0.62rem !important;
+            min-height: 1.92rem !important;
+            min-width: 1.92rem !important;
+            width: 1.92rem !important;
+            padding: 0 !important;
             margin: 0 !important;
             color: #9f1239 !important;
-            font-size: 0.72rem !important;
-            line-height: 1.1 !important;
+            font-size: 0 !important;
+            line-height: 0 !important;
             font-weight: 800 !important;
-            width: auto !important;
-            height: 1.7rem !important;
-            display: inline-block !important;
+            height: 1.92rem !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
             appearance: none !important;
             -webkit-appearance: none !important;
             text-transform: none !important;
@@ -697,19 +701,27 @@ def render_app_styles() -> None:
             white-space: nowrap !important;
             writing-mode: horizontal-tb !important;
             text-shadow: none !important;
+            animation: ai-logout-float 2.8s ease-in-out infinite, ai-logout-glow 3s ease-in-out infinite;
             transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, filter 160ms ease !important;
         }
         .st-key-sidebar_header_logout .stButton > button p,
         .st-key-sidebar_header_logout .stButton > button span {
             margin: 0 !important;
-            font-size: 0.72rem !important;
-            line-height: 1.1 !important;
+            font-size: 0 !important;
+            line-height: 0 !important;
             color: #9f1239 !important;
             font-weight: 800 !important;
             letter-spacing: 0.015em;
             white-space: nowrap !important;
             writing-mode: horizontal-tb !important;
             text-shadow: none !important;
+        }
+        .st-key-sidebar_header_logout .stButton > button svg,
+        .st-key-sidebar_header_logout [data-testid="baseButton-secondary"] svg {
+            width: 1rem !important;
+            height: 1rem !important;
+            color: #9f1239 !important;
+            fill: currentColor !important;
         }
         .st-key-sidebar_header_logout .stButton > button:focus,
         .st-key-sidebar_header_logout .stButton > button:focus-visible,
