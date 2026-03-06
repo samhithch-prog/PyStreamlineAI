@@ -2226,7 +2226,7 @@ def get_recent_chat_sessions(user_id: int, limit: int = 12) -> list[dict[str, An
             SELECT id, title, created_at, updated_at
             FROM chat_sessions
             WHERE user_id = ?
-            ORDER BY datetime(updated_at) DESC, id DESC
+            ORDER BY updated_at DESC, id DESC
             LIMIT ?
             """,
             (user_id, limit),
