@@ -674,22 +674,21 @@ def render_app_styles() -> None:
         }
         .st-key-sidebar_header_logout .stButton > button,
         .st-key-sidebar_header_logout [data-testid="baseButton-secondary"] {
-            border: none !important;
-            background: transparent !important;
-            background-color: transparent !important;
-            background-image: none !important;
-            box-shadow: none !important;
-            border-radius: 0 !important;
-            min-height: 0 !important;
+            border: 1px solid rgba(225, 29, 72, 0.38) !important;
+            background: linear-gradient(135deg, #fff1f2 0%, #ffe4e6 100%) !important;
+            background-color: #fff1f2 !important;
+            box-shadow: 0 5px 14px rgba(225, 29, 72, 0.2) !important;
+            border-radius: 999px !important;
+            min-height: 1.7rem !important;
             min-width: 0 !important;
-            padding: 0 !important;
+            padding: 0.14rem 0.62rem !important;
             margin: 0 !important;
-            color: #be123c !important;
-            font-size: 0.78rem !important;
-            line-height: 1 !important;
+            color: #9f1239 !important;
+            font-size: 0.72rem !important;
+            line-height: 1.1 !important;
             font-weight: 800 !important;
             width: auto !important;
-            height: auto !important;
+            height: 1.7rem !important;
             display: inline-block !important;
             appearance: none !important;
             -webkit-appearance: none !important;
@@ -697,21 +696,20 @@ def render_app_styles() -> None:
             letter-spacing: 0.015em;
             white-space: nowrap !important;
             writing-mode: horizontal-tb !important;
-            text-shadow: 0 0 5px rgba(225, 29, 72, 0.22);
-            animation: ai-logout-float 2.8s ease-in-out infinite, ai-logout-glow 3s ease-in-out infinite;
-            transition: color 140ms ease, filter 140ms ease, letter-spacing 140ms ease !important;
+            text-shadow: none !important;
+            transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, filter 160ms ease !important;
         }
         .st-key-sidebar_header_logout .stButton > button p,
         .st-key-sidebar_header_logout .stButton > button span {
             margin: 0 !important;
-            font-size: 0.78rem !important;
-            line-height: 1 !important;
-            color: #be123c !important;
+            font-size: 0.72rem !important;
+            line-height: 1.1 !important;
+            color: #9f1239 !important;
             font-weight: 800 !important;
             letter-spacing: 0.015em;
             white-space: nowrap !important;
             writing-mode: horizontal-tb !important;
-            text-shadow: 0 0 5px rgba(225, 29, 72, 0.22);
+            text-shadow: none !important;
         }
         .st-key-sidebar_header_logout .stButton > button:focus,
         .st-key-sidebar_header_logout .stButton > button:focus-visible,
@@ -719,26 +717,21 @@ def render_app_styles() -> None:
         .st-key-sidebar_header_logout [data-testid="baseButton-secondary"]:focus,
         .st-key-sidebar_header_logout [data-testid="baseButton-secondary"]:focus-visible,
         .st-key-sidebar_header_logout [data-testid="baseButton-secondary"]:active {
-            border: none !important;
-            background: transparent !important;
-            background-color: transparent !important;
-            background-image: none !important;
-            box-shadow: none !important;
-            outline: none !important;
+            border: 1px solid rgba(190, 24, 93, 0.62) !important;
+            background: linear-gradient(135deg, #ffe4e6 0%, #fecdd3 100%) !important;
+            box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.18) !important;
+            outline: 0 !important;
         }
         .st-key-sidebar_header_logout .stButton > button:hover,
         .st-key-sidebar_header_logout [data-testid="baseButton-secondary"]:hover {
-            border: none !important;
-            background: transparent !important;
-            background-color: transparent !important;
-            background-image: none !important;
-            color: #e11d48 !important;
-            box-shadow: none !important;
-            filter: none !important;
-            transform: none !important;
+            border: 1px solid rgba(190, 24, 93, 0.72) !important;
+            background: linear-gradient(135deg, #ffe4e6 0%, #fecdd3 100%) !important;
+            color: #881337 !important;
+            box-shadow: 0 8px 18px rgba(244, 63, 94, 0.28) !important;
+            filter: saturate(1.08) !important;
+            transform: translateY(-1px) !important;
             text-decoration: none;
             letter-spacing: 0.02em;
-            filter: drop-shadow(0 0 8px rgba(225, 29, 72, 0.45)) !important;
         }
         .st-key-sidebar_menu_toggle .stButton > button {
             border: none !important;
