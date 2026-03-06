@@ -214,29 +214,39 @@ def render_app_styles() -> None:
             text-decoration: underline;
             text-underline-offset: 2px;
         }
+        .st-key-login_forgot_row [data-testid="stHorizontalBlock"] {
+            align-items: center;
+        }
+        .st-key-login_forgot_reset_btn .stButton {
+            display: flex;
+            justify-content: flex-end;
+        }
         .st-key-login_forgot_reset_btn .stButton > button,
         .st-key-login_forgot_reset_btn button,
         .st-key-login_forgot_reset_btn [data-testid^="baseButton"] {
-            border: 0 !important;
-            background: transparent !important;
-            color: #64748b !important;
-            min-height: auto !important;
-            padding: 0 !important;
-            font-size: 0.76rem !important;
-            font-weight: 600 !important;
+            border: 1px solid rgba(14, 165, 233, 0.4) !important;
+            background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(34, 211, 238, 0.2)) !important;
+            color: #0f172a !important;
+            min-height: 1.45rem !important;
+            height: 1.45rem !important;
+            padding: 0.02rem 0.52rem !important;
+            font-size: 0.66rem !important;
+            font-weight: 700 !important;
             text-decoration: none !important;
-            justify-content: flex-end !important;
-            box-shadow: none !important;
+            border-radius: 999px !important;
+            justify-content: center !important;
+            box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03) !important;
+            transition: transform 130ms ease, border-color 130ms ease, box-shadow 130ms ease !important;
         }
         .st-key-login_forgot_reset_btn .stButton > button:hover,
         .st-key-login_forgot_reset_btn button:hover,
         .st-key-login_forgot_reset_btn [data-testid^="baseButton"]:hover {
-            color: #334155 !important;
-            text-decoration: underline !important;
-            text-underline-offset: 2px;
-            background: transparent !important;
-            border: 0 !important;
-            box-shadow: none !important;
+            color: #0f172a !important;
+            text-decoration: none !important;
+            background: linear-gradient(135deg, rgba(14, 165, 233, 0.2), rgba(34, 211, 238, 0.28)) !important;
+            border-color: rgba(8, 145, 178, 0.65) !important;
+            box-shadow: 0 4px 12px rgba(14, 165, 233, 0.18) !important;
+            transform: translateY(-1px) !important;
         }
         .st-key-login_submit_btn button,
         .st-key-login_submit_btn [data-testid="baseButton-primary"] {

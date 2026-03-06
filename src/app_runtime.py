@@ -3898,7 +3898,7 @@ def render_auth_screen() -> None:
                                 with forgot_reset_col:
                                     with st.container(key="login_forgot_reset_btn"):
                                         open_reset = st.form_submit_button(
-                                            "Reset",
+                                            "Reset ↺",
                                             use_container_width=False,
                                         )
                             with st.container(key="login_actions"):
