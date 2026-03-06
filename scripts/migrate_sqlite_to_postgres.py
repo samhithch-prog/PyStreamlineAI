@@ -19,6 +19,7 @@ TABLE_ORDER = [
     "chat_history",
     "promo_codes",
     "promo_redemptions",
+    "app_settings",
 ]
 
 
@@ -91,6 +92,7 @@ def main() -> None:
             with pg_conn.cursor() as cur:
                 cur.execute(
                     "TRUNCATE TABLE promo_redemptions, promo_codes, chat_history, user_email_otp_events, "
+                    "app_settings, "
                     "signup_verification_requests, "
                     "user_login_events, auth_sessions, "
                     "analysis_history, chat_sessions, users RESTART IDENTITY CASCADE"

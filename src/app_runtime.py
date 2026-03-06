@@ -12,8 +12,10 @@ import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from functools import lru_cache
 from typing import Any
 from xml.etree import ElementTree as ET
+from zoneinfo import ZoneInfo
 
 import pdfplumber
 import streamlit as st
@@ -49,6 +51,7 @@ EMAIL_OTP_RESEND_SECONDS_DEFAULT = 60
 EMAIL_OTP_MAX_ATTEMPTS_DEFAULT = 5
 PASSWORD_RESET_RESEND_SECONDS_DEFAULT = 30
 SIGNUP_REQUEST_TTL_HOURS_DEFAULT = 24
+DEFAULT_APP_TIMEZONE = "America/New_York"
 PUBLIC_EMAIL_DOMAINS = {
     "gmail.com",
     "googlemail.com",
@@ -218,6 +221,33 @@ def get_config_value(
         return str(default or "").strip()
 
 
+def get_db_setting_value(setting_key: str) -> str:
+    cleaned_key = str(setting_key or "").strip()
+    if not cleaned_key:
+        return ""
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT setting_value
+            FROM app_settings
+            WHERE setting_key = ?
+            LIMIT 1
+            """,
+            (cleaned_key,),
+        ).fetchone()
+        if row is None:
+            return ""
+        if isinstance(row, dict):
+            return str(row.get("setting_value", "") or "").strip()
+        return str(row[0] or "").strip()
+    except Exception:
+        return ""
+    finally:
+        conn.close()
+
+
 def parse_bool(raw_value: str, default: bool = False) -> bool:
     cleaned = str(raw_value or "").strip().lower()
     if not cleaned:
@@ -231,6 +261,25 @@ def parse_int(raw_value: str, default: int, min_value: int, max_value: int) -> i
     except Exception:
         parsed = default
     return max(min_value, min(max_value, parsed))
+
+
+@lru_cache(maxsize=8)
+def resolve_timezone(tz_name: str) -> Any:
+    cleaned_name = str(tz_name or "").strip()
+    if not cleaned_name:
+        return timezone.utc
+    try:
+        return ZoneInfo(cleaned_name)
+    except Exception:
+        return timezone.utc
+
+
+def get_app_timezone() -> Any:
+    configured_tz = get_config_value("APP_TIMEZONE", "app", "timezone", DEFAULT_APP_TIMEZONE)
+    resolved = resolve_timezone(configured_tz)
+    if resolved == timezone.utc and str(configured_tz or "").strip() not in {"UTC", "Etc/UTC", "Z"}:
+        return resolve_timezone(DEFAULT_APP_TIMEZONE)
+    return resolved
 
 
 def db_connect() -> DBConnection:
@@ -477,6 +526,17 @@ def init_db() -> None:
             email TEXT NOT NULL,
             created_at TEXT NOT NULL,
             UNIQUE(code, email)
+        )
+        """
+    )
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS app_settings (
+            id {id_pk_sql},
+            setting_key TEXT NOT NULL UNIQUE,
+            setting_value TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
         """
     )
@@ -2479,16 +2539,15 @@ def extract_resume_text(uploaded_file) -> str:
 
 
 def get_openai_key() -> str | None:
-    try:
-        if st.secrets.get("OPENAI_API_KEY"):
-            return st.secrets["OPENAI_API_KEY"]
-    except Exception:
-        pass
-    return os.getenv("OPENAI_API_KEY")
+    key_from_db = get_db_setting_value("OPENAI_API_KEY")
+    if key_from_db:
+        return key_from_db
+    key_from_env = str(os.getenv("OPENAI_API_KEY", "")).strip()
+    return key_from_env or None
 
 
 def time_based_greeting() -> str:
-    hour = datetime.now().hour
+    hour = datetime.now(get_app_timezone()).hour
     if 5 <= hour < 12:
         return "Good morning"
     if 12 <= hour < 17:
