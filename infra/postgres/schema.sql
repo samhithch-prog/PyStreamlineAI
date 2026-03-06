@@ -106,6 +106,14 @@ CREATE TABLE IF NOT EXISTS promo_redemptions (
     UNIQUE(code, email)
 );
 
+CREATE TABLE IF NOT EXISTS app_settings (
+    id BIGSERIAL PRIMARY KEY,
+    setting_key TEXT NOT NULL UNIQUE,
+    setting_value TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_analysis_history_user_id ON analysis_history(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_history_user_id ON chat_history(user_id);
 CREATE INDEX IF NOT EXISTS idx_chat_history_session_id ON chat_history(session_id);

@@ -6,8 +6,15 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
    ```bash
    pip install -r requirements.txt
    ```
-2. Set your OpenAI key:
-   - PowerShell:
+2. Set your OpenAI key in database:
+   - Run this once in PostgreSQL:
+     ```sql
+     INSERT INTO app_settings (setting_key, setting_value, created_at, updated_at)
+     VALUES ('OPENAI_API_KEY', 'your_key_here', NOW()::text, NOW()::text)
+     ON CONFLICT (setting_key)
+     DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = EXCLUDED.updated_at;
+     ```
+   - Optional fallback for local/dev:
      ```powershell
      $env:OPENAI_API_KEY="your_key_here"
      ```
@@ -29,8 +36,11 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
      $env:SMTP_USE_TLS="true"
      $env:OTP_PEPPER="long_random_secret_value"
      ```
-   - `OTP_PEPPER` is optional if `[auth].cookie_secret` is already set; that value is used as fallback.
-5. Optional OAuth login (recommended for refresh-persistent login):
+    - `OTP_PEPPER` is optional if `[auth].cookie_secret` is already set; that value is used as fallback.
+5. Optional app timezone for greetings/UI time context:
+   - Set `APP_TIMEZONE` (IANA name, for example `America/New_York`).
+   - If not set, app defaults to `America/New_York`.
+6. Optional OAuth login (recommended for refresh-persistent login):
    - Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`
    - Fill `cookie_secret` and provider credentials (`[auth.google]` and/or `[auth.linkedin]`)
    - Optional promo codes (disabled by default):
@@ -41,7 +51,7 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
      - Use metadata URL: `https://www.linkedin.com/oauth/.well-known/openid-configuration`
      - Use scopes: `openid profile email`
    - If LinkedIn rejects `http://localhost:8501/oauth2callback`, use an HTTPS tunnel URL and set `auth.redirect_uri` to that HTTPS callback
-6. Run:
+7. Run:
    ```bash
    streamlit run app.py
    ```
@@ -71,7 +81,14 @@ Resume AI Checker using Streamlit + LangChain + OpenAI.
    ```bash
    python scripts/migrate_sqlite_to_postgres.py --sqlite-path users.db --truncate
    ```
-6. Open pgAdmin:
+6. (Optional) migrate existing local PostgreSQL data to Supabase:
+   ```powershell
+   $env:SOURCE_DATABASE_URL="postgresql://pystreamline_app:YOUR_LOCAL_PASSWORD@localhost:5432/pystreamline"
+   $env:TARGET_DATABASE_URL="postgresql://postgres.dlbeyfzfubkiqklaowbd:YOUR_SUPABASE_PASSWORD@aws-0-us-west-2.pooler.supabase.com:5432/postgres?sslmode=require"
+   python scripts/migrate_postgres_to_postgres.py --truncate
+   $env:DATABASE_URL=$env:TARGET_DATABASE_URL
+   ```
+7. Open pgAdmin:
    - URL: `http://localhost:5050`
    - Login from `.env.postgres`
    - Add server:
