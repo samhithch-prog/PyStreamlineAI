@@ -3414,6 +3414,22 @@ def default_bot_messages(full_name: str | None = None) -> list[dict[str, str]]:
     return [{"role": "assistant", "content": BOT_WELCOME_MESSAGE}]
 
 
+def default_ai_workspace_messages(full_name: str | None = None) -> list[dict[str, str]]:
+    if full_name and full_name.strip():
+        first_name = full_name.strip().split()[0]
+        greeting = (
+            f"{time_based_greeting()}, {first_name}. "
+            "I am ZoSwi AI Workspace. Ask anything and I will respond like a real-time assistant."
+        )
+        return [{"role": "assistant", "content": greeting}]
+    return [
+        {
+            "role": "assistant",
+            "content": "I am ZoSwi AI Workspace. Ask anything and I will respond like a real-time assistant.",
+        }
+    ]
+
+
 def sync_bot_for_logged_in_user() -> None:
     user = st.session_state.get("user") or {}
     email = str(user.get("email", "")).strip().lower()
@@ -3433,6 +3449,14 @@ def sync_bot_for_logged_in_user() -> None:
         st.session_state.clear_zoswi_input = True
         st.session_state.full_chat_submit = False
         st.session_state.clear_full_chat_input = True
+        st.session_state.ai_workspace_messages = default_ai_workspace_messages(full_name)
+        st.session_state.ai_workspace_pending_prompt = None
+        st.session_state.ai_workspace_submit = False
+        st.session_state.ai_workspace_clear_input = True
+        st.session_state.ai_workspace_input = ""
+        st.session_state.ai_workspace_unlock_code = ""
+        st.session_state.ai_workspace_unlock_status = ""
+        st.session_state.ai_workspace_unlock_ok = False
         if full_name:
             first_name = full_name.split()[0]
             st.toast(f"{time_based_greeting()}, {first_name}. ZoSwi is live.")
