@@ -252,7 +252,7 @@ def render_careers_motivation_hero(full_name: str, analysis_score: int) -> None:
         </style>
         <div id="careers-hero-card">
             <div id="careers-hero-chip">ZoSwi Careers</div>
-            <h1 id="careers-hero-title">Letâ€™s Find Jobs You Can Actually Land</h1>
+        <h1 id="careers-hero-title">Let's Find Jobs You Can Actually Land</h1>
             <p id="careers-hero-sub">Tell us your role, location, visa needs, and job type. <span id="careers-zoswi-brand">ZoSwi</span> will shortlist the best matches so you can apply with confidence.</p>
             <div id="careers-motivation-wrap">
                 <p id="careers-motivation-head">Application Tip</p>
@@ -308,7 +308,7 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
 
     st.markdown("### Career Match Studio: Work Authorization + Sponsorship Insights")
     st.caption(
-        "Easy Check: fetch live roles, apply your position-type filters, and rank jobs by resume fit + sponsorship signal."
+        "Agentive mode: ZoSwi plans and runs live role fetch, filter validation, and resume + sponsorship ranking in one flow."
     )
     context_mode = "Resume + JD" if str(target_job_description or "").strip() else "Resume Only"
     st.caption(f"Active tailoring mode: {context_mode}")
@@ -495,57 +495,47 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
             return
 
         with st.spinner("Fetching jobs and computing resume + visa fit..."):
-            jobs, fetch_msg = fetch_jobs_from_all_sources(
+            search_result = run_agentive_job_search_pipeline(
+                resume_text=resume_text,
+                target_job_description=str(target_job_description or ""),
                 role_query=str(role_query or ""),
                 preferred_location=str(preferred_location or ""),
+                visa_status=str(visa_status or ""),
+                sponsorship_required=bool(sponsorship_required),
+                selected_position_types=selected_position_types,
+                posted_within_days=int(posted_within_days or 0),
                 max_results=int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT),
             )
-            if not jobs:
-                st.session_state.job_search_results = []
-                st.session_state.job_search_last_error = sanitize_job_search_error_message(fetch_msg)
-            else:
-                date_filtered_jobs, posted_msg = filter_jobs_by_posted_within(
-                    jobs, int(posted_within_days or 0)
+            ok = bool(search_result.get("ok"))
+            search_results = search_result.get("results", [])
+            if not isinstance(search_results, list):
+                search_results = []
+            search_filters = search_result.get("filters", {})
+            st.session_state.job_search_results = search_results if ok else []
+            st.session_state.job_search_last_error = sanitize_job_search_error_message(
+                str(search_result.get("error", "")).strip()
+            )
+            if ok and user_id > 0:
+                history_role = str(search_filters.get("role_query", role_query)) if isinstance(search_filters, dict) else str(role_query)
+                history_location = (
+                    str(search_filters.get("preferred_location", preferred_location))
+                    if isinstance(search_filters, dict)
+                    else str(preferred_location)
                 )
-                if not date_filtered_jobs:
-                    st.session_state.job_search_results = []
-                    combined_error = " ".join(part for part in [fetch_msg, posted_msg] if str(part).strip())
-                    st.session_state.job_search_last_error = sanitize_job_search_error_message(
-                        combined_error or "No jobs matched selected filters."
-                    )
-                    return
-                filtered_jobs, position_msg = filter_jobs_by_position_types(
-                    date_filtered_jobs, selected_position_types
+                history_visa = str(search_filters.get("visa_status", visa_status)) if isinstance(search_filters, dict) else str(visa_status)
+                history_sponsorship = (
+                    bool(search_filters.get("sponsorship_required", sponsorship_required))
+                    if isinstance(search_filters, dict)
+                    else bool(sponsorship_required)
                 )
-                if not filtered_jobs:
-                    st.session_state.job_search_results = []
-                    combined_error = " ".join(
-                        part for part in [fetch_msg, posted_msg, position_msg] if str(part).strip()
-                    )
-                    st.session_state.job_search_last_error = sanitize_job_search_error_message(
-                        combined_error or "No jobs matched selected filters."
-                    )
-                    return
-                ranked = rank_jobs_for_candidate(
-                    resume_text=resume_text,
-                    raw_jobs=filtered_jobs,
-                    preferred_location=str(preferred_location or ""),
-                    visa_status=str(visa_status or ""),
-                    sponsorship_required=bool(sponsorship_required),
-                    target_job_context=str(target_job_description or ""),
-                )
-                st.session_state.job_search_results = ranked
-                st.session_state.job_search_last_error = sanitize_job_search_error_message(" ".join(
-                    part for part in [fetch_msg, posted_msg, position_msg] if str(part).strip()
-                ).strip())
                 save_job_search_history(
                     user_id=user_id,
-                    source_profile="All Sources",
-                    role_query=str(role_query or ""),
-                    preferred_location=str(preferred_location or ""),
-                    visa_status=str(visa_status or ""),
-                    sponsorship_required=bool(sponsorship_required),
-                    results=ranked,
+                    source_profile="Careers Agentive",
+                    role_query=history_role,
+                    preferred_location=history_location,
+                    visa_status=history_visa,
+                    sponsorship_required=history_sponsorship,
+                    results=search_results,
                 )
 
     results = st.session_state.get("job_search_results", [])

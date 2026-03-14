@@ -213,3 +213,8 @@ __marimo__/
 
 # Local DB schema (keep out of git; use Supabase SQL editor/manual migration instead)
 infra/postgres/schema.sql
+
+# Local README files
+README
+README.md
+readme.md

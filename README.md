@@ -1,22 +1,22 @@
 # PyStreamlineAI
-Resume AI Checker using Streamlit + LangChain + OpenAI.
+Resume AI Checker using Streamlit + LangChain + ZoSwiAI.
 
 ## Setup
 1. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-2. Set your OpenAI key in database:
+2. Set your AI key in database:
    - Run this once in PostgreSQL:
      ```sql
      INSERT INTO app_settings (setting_key, setting_value, created_at, updated_at)
-     VALUES ('OPENAI_API_KEY', 'your_key_here', NOW()::text, NOW()::text)
+     VALUES ('ZOSWI_AI_API_KEY', 'your_key_here', NOW()::text, NOW()::text)
      ON CONFLICT (setting_key)
      DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = EXCLUDED.updated_at;
      ```
    - Optional fallback for local/dev:
      ```powershell
-     $env:OPENAI_API_KEY="your_key_here"
+     $env:ZOSWI_AI_API_KEY="your_key_here"
      ```
 3. Configure PostgreSQL connection (required):
    - Set `DATABASE_URL` environment variable, or set `[database].url` in `.streamlit/secrets.toml`

@@ -10,7 +10,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
     email = str(user.get("email", "")).strip().lower()
     logo_data_uri = get_logo_data_uri()
     is_mobile = is_mobile_browser()
-    chat_panel_height = 420 if is_mobile else 560
+    chat_panel_height = 500 if is_mobile else 640
 
     if st.session_state.get("ai_workspace_clear_input"):
         st.session_state.ai_workspace_input = ""
@@ -143,27 +143,34 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             box-shadow: 0 8px 18px rgba(2, 132, 199, 0.2) !important;
         }
         .st-key-ai_workspace_reset_btn button {
-            border-radius: 999px !important;
-            width: 1.96rem !important;
-            min-width: 1.96rem !important;
-            max-width: 1.96rem !important;
-            min-height: 1.96rem !important;
+            width: auto !important;
+            min-width: 0 !important;
+            max-width: none !important;
+            min-height: 0 !important;
+            height: auto !important;
             padding: 0 !important;
-            font-size: 0.92rem !important;
-            font-weight: 800 !important;
-            border: 1px solid #bfdbfe !important;
-            background: #eff6ff !important;
+            font-size: 1.02rem !important;
+            font-weight: 900 !important;
+            border: 0 !important;
+            background: transparent !important;
             color: #1e3a8a !important;
-            box-shadow: 0 2px 6px rgba(37, 99, 235, 0.18) !important;
+            box-shadow: none !important;
+            line-height: 1 !important;
         }
         .st-key-ai_workspace_reset_btn {
             display: flex !important;
             justify-content: flex-end !important;
             align-items: center !important;
+            margin-right: 0 !important;
+            position: absolute !important;
+            top: 0.34rem !important;
+            right: 0.34rem !important;
+            z-index: 6 !important;
         }
         .st-key-ai_workspace_reset_btn button:hover {
-            border-color: #93c5fd !important;
-            background: #dbeafe !important;
+            border: 0 !important;
+            background: transparent !important;
+            color: #0c4a6e !important;
         }
         .st-key-ai_workspace_unlock_shell [data-testid="stTextInput"] input,
         .st-key-ai_workspace_input_wrap [data-testid="stTextInput"] input {
@@ -219,6 +226,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             border-radius: 14px;
             padding: 0.45rem;
             margin-top: 0.5rem;
+            position: relative;
             background:
                 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='340' height='140' viewBox='0 0 340 140'%3E%3Ctext x='50%25' y='54%25' dominant-baseline='middle' text-anchor='middle' font-family='Segoe UI,Arial,sans-serif' font-size='52' font-weight='700' fill='%230284c7' fill-opacity='0.11'%3EZoSwi%3C/text%3E%3C/svg%3E"),
                 linear-gradient(transparent 96%, rgba(148, 163, 184, 0.05) 96%),
@@ -382,7 +390,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             display: inline-flex;
             align-items: center;
             gap: 0.36rem;
-            margin: 0.06rem 0 0.48rem 0.08rem;
+            margin: 0.06rem 2.1rem 0.48rem 0.08rem;
             font-size: 0.86rem;
             font-weight: 900;
             letter-spacing: 0.015em;
@@ -489,6 +497,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
         }
         .aiws-msg-image-wrap {
             width: 100%;
+            position: relative;
             border-radius: 12px;
             border: 1px solid #bfdbfe;
             background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
@@ -503,6 +512,112 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             object-fit: contain;
             margin: 0 auto;
         }
+        .aiws-image-watermark {
+            position: absolute;
+            right: 0.56rem;
+            bottom: 0.5rem;
+            color: rgba(248, 250, 252, 0.52);
+            font-size: 0.84rem;
+            line-height: 1;
+            letter-spacing: 0.02em;
+            font-weight: 900;
+            text-shadow: 0 1px 2px rgba(2, 6, 23, 0.46);
+            pointer-events: none;
+            user-select: none;
+        }
+        .aiws-image-actions {
+            position: absolute;
+            top: 0.46rem;
+            right: 0.46rem;
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 0.26rem;
+            margin-top: 0;
+            z-index: 2;
+        }
+        .aiws-image-action {
+            width: 1.78rem;
+            height: 1.78rem;
+            border-radius: 999px;
+            border: 1px solid rgba(186, 230, 253, 0.78);
+            background: rgba(248, 250, 252, 0.9);
+            color: #0f172a;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.82rem;
+            font-weight: 900;
+            box-shadow: 0 2px 10px rgba(15, 23, 42, 0.18);
+            padding: 0;
+            line-height: 1;
+            backdrop-filter: blur(2px);
+        }
+        .aiws-image-action:hover {
+            border-color: rgba(125, 211, 252, 0.98);
+            background: rgba(239, 246, 255, 0.97);
+            color: #0369a1;
+        }
+        .aiws-image-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 1200;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+        }
+        .aiws-image-modal:target {
+            display: flex;
+        }
+        .aiws-image-modal-backdrop {
+            position: absolute;
+            inset: 0;
+            background: rgba(2, 6, 23, 0.72);
+            backdrop-filter: blur(2px);
+        }
+        .aiws-image-modal-card {
+            position: relative;
+            z-index: 1;
+            width: min(94vw, 1080px);
+            max-height: 90vh;
+            border-radius: 14px;
+            border: 1px solid rgba(191, 219, 254, 0.64);
+            background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+            box-shadow: 0 24px 56px rgba(2, 6, 23, 0.56);
+            padding: 0.42rem;
+            overflow: hidden;
+        }
+        .aiws-image-modal-card img {
+            width: 100%;
+            height: auto;
+            max-height: calc(90vh - 0.84rem);
+            object-fit: contain;
+            border-radius: 10px;
+            display: block;
+        }
+        .aiws-image-modal-close {
+            position: absolute;
+            top: 0.42rem;
+            right: 0.42rem;
+            width: 1.8rem;
+            height: 1.8rem;
+            border-radius: 999px;
+            border: 1px solid rgba(191, 219, 254, 0.58);
+            background: rgba(15, 23, 42, 0.72);
+            color: #f8fafc;
+            text-decoration: none;
+            font-size: 1.08rem;
+            line-height: 1.68rem;
+            text-align: center;
+            font-weight: 700;
+        }
+        .aiws-image-modal-close:hover {
+            background: rgba(30, 41, 59, 0.88);
+            color: #ffffff;
+            border-color: rgba(186, 230, 253, 0.9);
+        }
         .aiws-input-note {
             margin: 0.18rem auto 0.08rem auto;
             text-align: center;
@@ -513,6 +628,14 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             width: 100%;
             animation: aiwsInputNoteBlink 1.15s ease-in-out infinite;
         }
+        .aiws-loading-label {
+            margin: 0.08rem 0 0.32rem 0.08rem;
+            color: #64748b;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            animation: aiwsLoadingBlink 1s ease-in-out infinite;
+        }
         @keyframes aiwsInputNoteBlink {
             0% {
                 opacity: 0.42;
@@ -522,6 +645,17 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             }
             100% {
                 opacity: 0.42;
+            }
+        }
+        @keyframes aiwsLoadingBlink {
+            0% {
+                opacity: 0.4;
+            }
+            50% {
+                opacity: 1;
+            }
+            100% {
+                opacity: 0.4;
             }
         }
         .aiws-attach-hint {
@@ -656,15 +790,15 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
         f"""
         <div class="ai-hero">
             <div class="ai-chip">Promo Workspace</div>
-            <h1>ZoSwi AI Workspace</h1>
-            <p>Chat in a full-screen assistant experience with real-time streaming responses for {html.escape(first_name)}.</p>
+            <h1>ZoSwi Live Workspace</h1>
+            <p>Chat in a full Screen assistant experience with realtime streaming responses for ZoSwi.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
     if not bool(st.session_state.get("ai_workspace_unlock_ok")):
-        st.info("Unlock AI Workspace with your promo code. This access can be redeemed once per account.")
+        st.info("Unlock ZoSwi Live Workspace with your promo code. This access can be redeemed once per account.")
         with st.container(key="ai_workspace_unlock_shell"):
             if is_mobile:
                 promo_code_text = st.text_input(
@@ -710,6 +844,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
         return
 
     pending_prompt = st.session_state.get("ai_workspace_pending_prompt")
+    image_gen_pending_prefix = "__aiws_image_gen__::"
     waiting_for_reply = bool(pending_prompt)
     st.caption("Access active for this account.")
     with st.container(key="ai_workspace_shell"):
@@ -719,7 +854,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                 <div class="ai-workspace-top">
                     <div>
                         <p class="ai-workspace-title"><span class="ai-workspace-title-brand">ZoSwi</span><span class="ai-workspace-title-role">Assistant</span></p>
-                        <p class="ai-workspace-sub">Natural conversational mode tuned for practical, high-quality answers.</p>
+                        <p class="ai-workspace-sub">Natural conversational mode with intent-aware reasoning for practical, high-quality answers.</p>
                     </div>
                 </div>
             </div>
@@ -730,7 +865,9 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             header_cols = st.columns([9.1, 0.9], gap="small")
             with header_cols[0]:
                 st.markdown(
-                    '<div class="aiws-chat-brand"><span class="brand-dot"></span><span class="brand-text">ZoSwi</span></div>',
+                    """
+                    <div class="aiws-chat-brand"><span class="brand-dot"></span><span class="brand-text">ZoSwi</span></div>
+                    """,
                     unsafe_allow_html=True,
                 )
             with header_cols[1]:
@@ -752,11 +889,15 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                     for msg in st.session_state.get("ai_workspace_messages", []):
                         if not isinstance(msg, dict):
                             continue
+                        role_value = str(msg.get("role", "assistant"))
+                        content_value = str(msg.get("content", ""))
+                        if role_value.strip().lower() == "assistant":
+                            content_value = sanitize_zoswi_response_text(content_value)
                         message_type = str(msg.get("message_type", "")).strip().lower()
                         if message_type == "assistant_image":
                             st.markdown(
                                 format_ai_workspace_image_message_html(
-                                    str(msg.get("content", "")),
+                                    content_value,
                                     str(msg.get("image_data_uri", "")),
                                     str(msg.get("image_alt", "AI image")),
                                 ),
@@ -765,8 +906,8 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                         else:
                             st.markdown(
                                 format_ai_workspace_message_html(
-                                    str(msg.get("role", "assistant")),
-                                    str(msg.get("content", "")),
+                                    role_value,
+                                    content_value,
                                     user_name_label,
                                 ),
                                 unsafe_allow_html=True,
@@ -780,6 +921,9 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             "Interview Prep": "Ask me 5 technical interview questions for my role and then critique my answers.",
             "ATS Keywords": "Give me ATS keywords I should add for this job description and where to place them.",
             "Project Story": "Help me build a STAR story for one project with metrics and impact.",
+            "Root Cause Fix": "I will share an issue. Rank likely root causes, give the minimum safe fix, and add a verification checklist.",
+            "Decision Simulator": "Help me choose between options using a weighted decision table, trade-offs, and a final recommendation.",
+            "ZoSwi Original Ideas": "Give me 5 unique ZoSwi feature ideas that are practical, not generic, and include MVP scope with success metrics.",
         }
         if "ai_workspace_insert_topic" not in st.session_state:
             st.session_state.ai_workspace_insert_topic = next(iter(prompt_templates))
@@ -867,7 +1011,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                             attached_name_preview = f"{attached_name_preview[:61]}..."
             with row_cols[1]:
                 message = st.text_input(
-                    "Message AI Workspace",
+                    "Message ZoSwi Live Workspace",
                     key="ai_workspace_input",
                     on_change=request_ai_workspace_submit,
                     placeholder="Ask anything...",
@@ -922,7 +1066,11 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
             has_attachment = attached_file is not None
             uploaded_name = str(getattr(attached_file, "name", "") or "uploaded_file").strip() or "uploaded_file"
             attachment_is_image = bool(has_attachment and is_supported_image_file_name(uploaded_name))
-            workspace_progress_text = "ZoSwi is working..."
+            workspace_progress_text = build_ai_workspace_progress_text(
+                clean_message,
+                has_attachment=has_attachment,
+                attachment_is_image=attachment_is_image,
+            )
 
             ai_messages = st.session_state.get("ai_workspace_messages", [])
             if not isinstance(ai_messages, list):
@@ -983,7 +1131,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                     user_line = f"{clean_message}\n\nAttached image: {uploaded_name}".strip()
                     ai_messages.append({"role": "user", "content": user_line})
                     with st.spinner(workspace_progress_text):
-                        ok_gen, generated_bytes, gen_error = generate_image_with_openai(
+                        ok_gen, generated_bytes, gen_error = generate_image_with_zoswiai(
                             clean_message,
                             requested_size,
                             requested_style,
@@ -994,10 +1142,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                             {
                                 "role": "assistant",
                                 "message_type": "assistant_image",
-                                "content": (
-                                    f"Image generated ({requested_style}, {requested_size}).\n"
-                                    "Professional context: visual designed for product, portfolio, and communication use."
-                                ),
+                                "content": "",
                                 "image_data_uri": data_uri,
                                 "image_alt": "AI generated image",
                             }
@@ -1047,32 +1192,9 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                 st.rerun()
 
             if is_ai_workspace_image_generation_request(clean_message):
-                requested_size = infer_image_generation_size(clean_message)
-                requested_style = infer_image_generation_style(clean_message)
                 ai_messages.append({"role": "user", "content": clean_message})
-                with st.spinner(workspace_progress_text):
-                    ok_gen, generated_bytes, gen_error = generate_image_with_openai(
-                        clean_message,
-                        requested_size,
-                        requested_style,
-                    )
-                if ok_gen:
-                    data_uri = build_image_data_uri(generated_bytes, "image/png")
-                    ai_messages.append(
-                        {
-                            "role": "assistant",
-                            "message_type": "assistant_image",
-                            "content": (
-                                f"Image generated ({requested_style}, {requested_size}).\n"
-                                "Professional context: visual designed for product, portfolio, and communication use."
-                            ),
-                            "image_data_uri": data_uri,
-                            "image_alt": "AI generated image",
-                        }
-                    )
-                else:
-                    ai_messages.append({"role": "assistant", "content": str(gen_error or "Image generation failed.")})
                 st.session_state.ai_workspace_messages = ai_messages
+                st.session_state.ai_workspace_pending_prompt = f"{image_gen_pending_prefix}{clean_message}"
                 st.session_state.ai_workspace_clear_input = True
                 if has_attachment:
                     st.session_state.ai_workspace_upload_nonce = upload_nonce + 1
@@ -1107,21 +1229,76 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                 st.rerun()
 
         if pending_prompt:
+            pending_prompt_text = str(pending_prompt)
+            if pending_prompt_text.startswith(image_gen_pending_prefix):
+                image_prompt = pending_prompt_text[len(image_gen_pending_prefix) :].strip()
+                requested_size = infer_image_generation_size(image_prompt)
+                requested_style = infer_image_generation_style(image_prompt)
+                with live_reply_container:
+                    loading_text = "Generating image..."
+                    loading_placeholder = st.empty()
+                    response_placeholder = st.empty()
+                    loading_placeholder.markdown(
+                        f'<div class="aiws-loading-label">{html.escape(loading_text)}</div>',
+                        unsafe_allow_html=True,
+                    )
+                    ok_gen, generated_bytes, gen_error = generate_image_with_zoswiai(
+                        image_prompt,
+                        requested_size,
+                        requested_style,
+                    )
+                    loading_placeholder.empty()
+                    ai_messages = st.session_state.get("ai_workspace_messages", [])
+                    if not isinstance(ai_messages, list):
+                        ai_messages = []
+                    if ok_gen:
+                        data_uri = build_image_data_uri(generated_bytes, "image/png")
+                        caption = ""
+                        response_placeholder.markdown(
+                            format_ai_workspace_image_message_html(caption, data_uri, "AI generated image"),
+                            unsafe_allow_html=True,
+                        )
+                        ai_messages.append(
+                            {
+                                "role": "assistant",
+                                "message_type": "assistant_image",
+                                "content": caption,
+                                "image_data_uri": data_uri,
+                                "image_alt": "AI generated image",
+                            }
+                        )
+                    else:
+                        failure_text = str(gen_error or "Image generation failed.")
+                        response_placeholder.markdown(
+                            format_ai_workspace_message_html("assistant", failure_text, user_name_label),
+                            unsafe_allow_html=True,
+                        )
+                        ai_messages.append({"role": "assistant", "content": failure_text})
+                    st.session_state.ai_workspace_messages = ai_messages
+                    st.session_state.ai_workspace_pending_prompt = None
+                    st.rerun()
             with live_reply_container:
+                loading_text = build_ai_workspace_progress_text(str(pending_prompt))
+                loading_placeholder = st.empty()
                 response_placeholder = st.empty()
-                response_placeholder.markdown(
-                    format_ai_workspace_message_html("assistant", "...", user_name_label),
+                loading_placeholder.markdown(
+                    f'<div class="aiws-loading-label">{html.escape(loading_text)}</div>',
                     unsafe_allow_html=True,
                 )
                 response_text = ""
                 for chunk in ask_ai_workspace_stream(str(pending_prompt)):
                     response_text += str(chunk)
+                    if response_text.strip():
+                        loading_placeholder.empty()
+                    preview_text = sanitize_zoswi_response_text(response_text)
                     response_placeholder.markdown(
-                        format_ai_workspace_message_html("assistant", response_text + " \u258c", user_name_label),
+                        format_ai_workspace_message_html("assistant", preview_text + " \u258c", user_name_label),
                         unsafe_allow_html=True,
                     )
+                response_text = sanitize_zoswi_response_text(response_text)
                 if not response_text.strip():
                     response_text = "I hit a temporary issue generating a response. Please try again."
+                loading_placeholder.empty()
                 response_placeholder.markdown(
                     format_ai_workspace_message_html("assistant", response_text, user_name_label),
                     unsafe_allow_html=True,

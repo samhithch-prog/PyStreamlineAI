@@ -1178,28 +1178,32 @@ def render_app_styles() -> None:
             align-items: center;
         }
         .st-key-sidebar_header_logout .stButton,
-        .st-key-sidebar_header_logout [data-testid="stButton"] {
+        .st-key-sidebar_header_logout [data-testid="stButton"],
+        .st-key-sidebar_header_logout_btn .stButton,
+        .st-key-sidebar_header_logout_btn [data-testid="stButton"] {
             margin: 0 !important;
             display: flex !important;
             justify-content: flex-end !important;
         }
         .st-key-sidebar_header_logout .stButton > button,
-        .st-key-sidebar_header_logout [data-testid="baseButton-secondary"] {
-            border: 1px solid rgba(225, 29, 72, 0.38) !important;
-            background: linear-gradient(135deg, #fff1f2 0%, #ffe4e6 100%) !important;
-            background-color: #fff1f2 !important;
-            box-shadow: 0 5px 14px rgba(225, 29, 72, 0.2) !important;
-            border-radius: 999px !important;
-            min-height: 1.92rem !important;
-            min-width: 1.92rem !important;
-            width: 1.92rem !important;
-            padding: 0 !important;
+        .st-key-sidebar_header_logout [data-testid="baseButton-secondary"],
+        .st-key-sidebar_header_logout_btn .stButton > button,
+        .st-key-sidebar_header_logout_btn [data-testid="baseButton-secondary"] {
+            border: none !important;
+            background: transparent !important;
+            background-color: transparent !important;
+            box-shadow: none !important;
+            border-radius: 0 !important;
+            min-height: 0 !important;
+            min-width: 0 !important;
+            width: auto !important;
+            height: auto !important;
+            padding: 0.02rem !important;
             margin: 0 !important;
             color: #9f1239 !important;
             font-size: 0 !important;
             line-height: 0 !important;
             font-weight: 800 !important;
-            height: 1.92rem !important;
             display: inline-flex !important;
             align-items: center !important;
             justify-content: center !important;
@@ -1210,11 +1214,13 @@ def render_app_styles() -> None:
             white-space: nowrap !important;
             writing-mode: horizontal-tb !important;
             text-shadow: none !important;
-            animation: ai-logout-float 2.8s ease-in-out infinite, ai-logout-glow 3s ease-in-out infinite;
-            transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, filter 160ms ease !important;
+            animation: none !important;
+            transition: transform 140ms ease, color 140ms ease, filter 140ms ease !important;
         }
         .st-key-sidebar_header_logout .stButton > button p,
-        .st-key-sidebar_header_logout .stButton > button span {
+        .st-key-sidebar_header_logout .stButton > button span,
+        .st-key-sidebar_header_logout_btn .stButton > button p,
+        .st-key-sidebar_header_logout_btn .stButton > button span {
             margin: 0 !important;
             font-size: 0 !important;
             line-height: 0 !important;
@@ -1226,7 +1232,9 @@ def render_app_styles() -> None:
             text-shadow: none !important;
         }
         .st-key-sidebar_header_logout .stButton > button svg,
-        .st-key-sidebar_header_logout [data-testid="baseButton-secondary"] svg {
+        .st-key-sidebar_header_logout [data-testid="baseButton-secondary"] svg,
+        .st-key-sidebar_header_logout_btn .stButton > button svg,
+        .st-key-sidebar_header_logout_btn [data-testid="baseButton-secondary"] svg {
             width: 1rem !important;
             height: 1rem !important;
             color: #9f1239 !important;
@@ -1237,20 +1245,28 @@ def render_app_styles() -> None:
         .st-key-sidebar_header_logout .stButton > button:active,
         .st-key-sidebar_header_logout [data-testid="baseButton-secondary"]:focus,
         .st-key-sidebar_header_logout [data-testid="baseButton-secondary"]:focus-visible,
-        .st-key-sidebar_header_logout [data-testid="baseButton-secondary"]:active {
-            border: 1px solid rgba(190, 24, 93, 0.62) !important;
-            background: linear-gradient(135deg, #ffe4e6 0%, #fecdd3 100%) !important;
-            box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.18) !important;
+        .st-key-sidebar_header_logout [data-testid="baseButton-secondary"]:active,
+        .st-key-sidebar_header_logout_btn .stButton > button:focus,
+        .st-key-sidebar_header_logout_btn .stButton > button:focus-visible,
+        .st-key-sidebar_header_logout_btn .stButton > button:active,
+        .st-key-sidebar_header_logout_btn [data-testid="baseButton-secondary"]:focus,
+        .st-key-sidebar_header_logout_btn [data-testid="baseButton-secondary"]:focus-visible,
+        .st-key-sidebar_header_logout_btn [data-testid="baseButton-secondary"]:active {
+            border: none !important;
+            background: transparent !important;
+            box-shadow: none !important;
             outline: 0 !important;
         }
         .st-key-sidebar_header_logout .stButton > button:hover,
-        .st-key-sidebar_header_logout [data-testid="baseButton-secondary"]:hover {
-            border: 1px solid rgba(190, 24, 93, 0.72) !important;
-            background: linear-gradient(135deg, #ffe4e6 0%, #fecdd3 100%) !important;
+        .st-key-sidebar_header_logout [data-testid="baseButton-secondary"]:hover,
+        .st-key-sidebar_header_logout_btn .stButton > button:hover,
+        .st-key-sidebar_header_logout_btn [data-testid="baseButton-secondary"]:hover {
+            border: none !important;
+            background: transparent !important;
             color: #881337 !important;
-            box-shadow: 0 8px 18px rgba(244, 63, 94, 0.28) !important;
-            filter: saturate(1.08) !important;
-            transform: translateY(-1px) !important;
+            box-shadow: none !important;
+            filter: saturate(1.06) !important;
+            transform: translateX(1px) scale(1.06) !important;
             text-decoration: none;
             letter-spacing: 0.02em;
         }
@@ -1809,6 +1825,37 @@ def render_app_styles() -> None:
             [data-testid="stSidebar"] {
                 width: min(86vw, 320px) !important;
             }
+            .st-key-sidebar_signed_row [data-testid="stHorizontalBlock"] {
+                align-items: center !important;
+                gap: 0.3rem !important;
+            }
+            .st-key-sidebar_signed_row [data-testid="column"]:first-child {
+                min-width: 0 !important;
+            }
+            .st-key-sidebar_signed_row [data-testid="column"]:last-child {
+                width: auto !important;
+                min-width: fit-content !important;
+                flex: 0 0 auto !important;
+            }
+            .st-key-sidebar_header_logout .stButton > button,
+            .st-key-sidebar_header_logout [data-testid="baseButton-secondary"],
+            .st-key-sidebar_header_logout_btn .stButton > button,
+            .st-key-sidebar_header_logout_btn [data-testid="baseButton-secondary"] {
+                padding: 0.08rem !important;
+                min-width: 1.65rem !important;
+                min-height: 1.65rem !important;
+                line-height: 1 !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+            }
+            .st-key-sidebar_header_logout .stButton > button svg,
+            .st-key-sidebar_header_logout [data-testid="baseButton-secondary"] svg,
+            .st-key-sidebar_header_logout_btn .stButton > button svg,
+            .st-key-sidebar_header_logout_btn [data-testid="baseButton-secondary"] svg {
+                width: 1.08rem !important;
+                height: 1.08rem !important;
+            }
             .st-key-home_dashboard_input_cols [data-testid="stHorizontalBlock"],
             .st-key-careers_profile_setup_cols [data-testid="stHorizontalBlock"],
             .st-key-full_chat_shell [data-testid="stHorizontalBlock"] {
@@ -1834,6 +1881,20 @@ def render_app_styles() -> None:
                 border-radius: 18px;
                 padding: 0.52rem 0.62rem;
                 margin-bottom: 8px;
+            }
+            .st-key-zoswi_panel [data-testid="stHorizontalBlock"] {
+                align-items: center !important;
+            }
+            .st-key-zoswi_minimize button,
+            .st-key-zoswi_reset button,
+            .st-key-zoswi_close button {
+                min-width: 1.55rem !important;
+                min-height: 1.55rem !important;
+                padding: 0 !important;
+                line-height: 1 !important;
+                display: inline-flex !important;
+                align-items: center !important;
+                justify-content: center !important;
             }
             .st-key-zoswi_fab::before {
                 width: 44px;
