@@ -6,6 +6,7 @@ from src.dto.runtime_dto import AppRuntimeHandlersDTO, PageConfigDTO
 
 def _build_handlers(current_user: object, calls: list[str]) -> AppRuntimeHandlersDTO:
     return AppRuntimeHandlersDTO(
+        bootstrap_runtime=lambda: calls.append("bootstrap"),
         init_db=lambda: calls.append("init_db"),
         init_state=lambda: calls.append("init_state"),
         sync_promo_codes_from_secrets=lambda: calls.append("sync_promo"),
@@ -39,9 +40,8 @@ def test_run_app_runtime_renders_auth_when_user_missing(monkeypatch) -> None:
         }
     ]
     assert calls == [
-        "init_db",
+        "bootstrap",
         "init_state",
-        "sync_promo",
         "restore_cookie",
         "cookie_sync",
         "render_auth",
@@ -70,9 +70,8 @@ def test_run_app_runtime_renders_main_when_user_exists(monkeypatch) -> None:
         }
     ]
     assert calls == [
-        "init_db",
+        "bootstrap",
         "init_state",
-        "sync_promo",
         "restore_cookie",
         "cookie_sync",
         "render_main",

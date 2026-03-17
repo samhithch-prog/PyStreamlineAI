@@ -12,9 +12,13 @@ def run_app_runtime(config: PageConfigDTO, handlers: AppRuntimeHandlersDTO) -> N
         layout=config.layout,
         initial_sidebar_state=config.initial_sidebar_state,
     )
-    handlers.init_db()
+    if not bool(st.session_state.get("_runtime_bootstrap_ready")):
+        with st.spinner("Preparing your workspace..."):
+            handlers.bootstrap_runtime()
+        st.session_state._runtime_bootstrap_ready = True
+    else:
+        handlers.bootstrap_runtime()
     handlers.init_state()
-    handlers.sync_promo_codes_from_secrets()
     handlers.try_restore_user_from_cookie()
     handlers.render_auth_cookie_sync()
 
@@ -22,4 +26,3 @@ def run_app_runtime(config: PageConfigDTO, handlers: AppRuntimeHandlersDTO) -> N
         handlers.render_auth_screen()
         return
     handlers.render_main_screen()
-

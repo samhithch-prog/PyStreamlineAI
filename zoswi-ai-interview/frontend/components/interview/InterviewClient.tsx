@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { getInterviewResult, getInterviewWebSocketUrl } from "@/lib/api";
-import type { EvaluationSignals, InterviewResultResponse, TranscriptMessage } from "@/lib/types";
+import { getInterviewResult, getInterviewWebSocketUrl } from "../../lib/api";
+import type { EvaluationSignals, InterviewResultResponse, TranscriptMessage } from "../../lib/types";
 
 import { CameraPreview } from "./CameraPreview";
 import { EvaluationPanel } from "./EvaluationPanel";

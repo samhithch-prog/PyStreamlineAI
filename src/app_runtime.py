@@ -43,6 +43,11 @@ try:
 except Exception:
     psycopg = None
 
+try:
+    from psycopg_pool import ConnectionPool as PsycopgConnectionPool
+except Exception:
+    PsycopgConnectionPool = None
+
 LOGO_IMAGE_PATH = os.path.join("assets", "logo.png")
 BOT_WELCOME_MESSAGE = "I am ZoSwi. Ask me about your Resume and JD analysis."
 BOT_LAUNCHER_ICON = "\U0001F916"
@@ -59,6 +64,7 @@ EMAIL_OTP_MAX_ATTEMPTS_DEFAULT = 5
 PASSWORD_RESET_RESEND_SECONDS_DEFAULT = 30
 SIGNUP_REQUEST_TTL_HOURS_DEFAULT = 24
 DEFAULT_APP_TIMEZONE = "America/New_York"
+RUNTIME_BOOTSTRAP_VERSION = 2
 MIN_JOB_DESCRIPTION_WORDS = 25
 MIN_JOB_DESCRIPTION_CHARS = 120
 CODING_STAGE_COUNT = 3
@@ -414,10 +420,12 @@ class DBCursor:
 
 
 class DBConnection:
-    def __init__(self, raw_connection: Any, backend: str) -> None:
+    def __init__(self, raw_connection: Any, backend: str, release_callback: Any = None) -> None:
         self._raw_connection = raw_connection
         self.backend = backend
         self._row_factory: Any = None
+        self._release_callback = release_callback
+        self._closed = False
 
     @property
     def row_factory(self) -> Any:
@@ -460,6 +468,15 @@ class DBConnection:
         self._raw_connection.rollback()
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if callable(self._release_callback):
+            try:
+                self._release_callback(self._raw_connection)
+                return
+            except Exception:
+                pass
         self._raw_connection.close()
 
 
@@ -594,6 +611,11 @@ def get_db_setting_value(setting_key: str) -> str:
     cleaned_key = str(setting_key or "").strip()
     if not cleaned_key:
         return ""
+    cached_settings = _cached_app_settings_map()
+    if cleaned_key in cached_settings:
+        return str(cached_settings.get(cleaned_key, "") or "").strip()
+    if cached_settings:
+        return ""
     conn = db_connect()
     conn.row_factory = sqlite3.Row
     try:
@@ -615,6 +637,42 @@ def get_db_setting_value(setting_key: str) -> str:
         return ""
     finally:
         conn.close()
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_app_settings_map() -> dict[str, str]:
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT setting_key, setting_value
+            FROM app_settings
+            """
+        ).fetchall()
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+    settings: dict[str, str] = {}
+    for row in rows:
+        if isinstance(row, dict):
+            key = str(row.get("setting_key", "") or "").strip()
+            value = str(row.get("setting_value", "") or "").strip()
+        else:
+            key = str(row[0] if row and len(row) > 0 else "").strip()
+            value = str(row[1] if row and len(row) > 1 else "").strip()
+        if key:
+            settings[key] = value
+    return settings
+
+
+def clear_cached_app_settings() -> None:
+    try:
+        _cached_app_settings_map.clear()
+    except Exception:
+        pass
 
 
 def parse_bool(raw_value: str, default: bool = False) -> bool:
@@ -651,6 +709,19 @@ def get_app_timezone() -> Any:
     return resolved
 
 
+@lru_cache(maxsize=1)
+def get_postgres_pool() -> Any:
+    if PsycopgConnectionPool is None or psycopg is None:
+        return None
+    db_url = get_database_url()
+    if not db_url:
+        return None
+    try:
+        return PsycopgConnectionPool(conninfo=db_url, min_size=1, max_size=8, timeout=12)
+    except Exception:
+        return None
+
+
 def db_connect() -> DBConnection:
     db_url = get_database_url()
     if not db_url:
@@ -659,6 +730,13 @@ def db_connect() -> DBConnection:
         raise RuntimeError("DATABASE_URL must use a PostgreSQL URL (postgresql:// or postgres://).")
     if psycopg is None:
         raise RuntimeError("PostgreSQL selected but psycopg is not installed.")
+    pool = get_postgres_pool()
+    if pool is not None:
+        try:
+            raw_conn = pool.getconn()
+            return DBConnection(raw_conn, "postgres", release_callback=pool.putconn)
+        except Exception:
+            pass
     raw_conn = psycopg.connect(db_url)
     return DBConnection(raw_conn, "postgres")
 
@@ -812,6 +890,11 @@ def is_production_environment() -> bool:
     return env_name in ZOSWI_PRODUCTION_ENV_NAMES
 
 
+def is_local_or_dev_environment() -> bool:
+    runtime_env = normalize_runtime_environment(get_runtime_environment())
+    return runtime_env in {"", "dev"}
+
+
 def get_prod_full_access_entitlement_token() -> str:
     configured = get_config_value(
         ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT_KEY,
@@ -909,6 +992,7 @@ def has_prod_full_access_entitlement(user: dict[str, Any] | None = None) -> bool
     return required in get_user_entitlement_tokens_from_user(candidate if isinstance(candidate, dict) else None)
 
 
+@st.cache_data(ttl=20, show_spinner=False)
 def get_dashboard_feature_flags() -> dict[str, bool]:
     flags: dict[str, bool] = {}
     for view_name, (setting_key, secret_key) in ZOSWI_DASHBOARD_FEATURE_FLAGS.items():
@@ -1255,6 +1339,19 @@ def get_logo_data_uri() -> str:
     return f"data:{mime_type};base64,{encoded_logo}"
 
 
+@st.cache_resource(show_spinner=False)
+def _bootstrap_runtime_once(bootstrap_version: int) -> bool:
+    _ = bootstrap_version
+    init_db()
+    sync_promo_codes_from_secrets()
+    clear_cached_app_settings()
+    return True
+
+
+def bootstrap_runtime() -> None:
+    _bootstrap_runtime_once(RUNTIME_BOOTSTRAP_VERSION)
+
+
 def init_db() -> None:
     conn = db_connect()
     id_pk_sql = "BIGSERIAL PRIMARY KEY" if conn.backend == "postgres" else "INTEGER PRIMARY KEY AUTOINCREMENT"
@@ -1499,6 +1596,28 @@ def init_db() -> None:
             """,
             (setting_key, "false", music_setting_now_iso, music_setting_now_iso),
         )
+    if is_local_or_dev_environment():
+        for setting_key, _secret_key in ZOSWI_DASHBOARD_FEATURE_FLAGS.values():
+            conn.execute(
+                """
+                INSERT INTO app_settings (setting_key, setting_value, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(setting_key) DO UPDATE SET
+                    setting_value = EXCLUDED.setting_value,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (setting_key, "true", music_setting_now_iso, music_setting_now_iso),
+            )
+        conn.execute(
+            """
+            INSERT INTO app_settings (setting_key, setting_value, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(setting_key) DO UPDATE SET
+                setting_value = EXCLUDED.setting_value,
+                updated_at = EXCLUDED.updated_at
+            """,
+            (ZOSWI_MUSIC_FEATURE_FLAG_KEY, "false", music_setting_now_iso, music_setting_now_iso),
+        )
 
     user_cols = get_table_columns(conn, "users")
     added_email_verified_col = False
@@ -1654,6 +1773,11 @@ def init_db() -> None:
                 (imported_session_id, legacy_user_id),
             )
     conn.commit()
+    clear_cached_app_settings()
+    try:
+        get_dashboard_feature_flags.clear()
+    except Exception:
+        pass
     conn.close()
     try:
         cleanup_expired_signup_verification_requests()
@@ -9671,7 +9795,6 @@ def init_state() -> None:
         "user": None,
         "analysis_result": None,
         "bot_open": False,
-        "bot_messages": default_bot_messages(),
         "bot_user_email": None,
         "active_chat_id": None,
         "zoswi_input": "",
@@ -9691,7 +9814,6 @@ def init_state() -> None:
         "full_chat_input": "",
         "full_chat_submit": False,
         "clear_full_chat_input": False,
-        "ai_workspace_messages": default_ai_workspace_messages(),
         "ai_workspace_input": "",
         "ai_workspace_submit": False,
         "ai_workspace_clear_input": False,
@@ -9786,6 +9908,10 @@ def init_state() -> None:
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    if "bot_messages" not in st.session_state:
+        st.session_state.bot_messages = default_bot_messages()
+    if "ai_workspace_messages" not in st.session_state:
+        st.session_state.ai_workspace_messages = default_ai_workspace_messages()
 
 
 def get_signup_form_text_keys() -> list[str]:
@@ -11384,9 +11510,86 @@ def logout_current_user() -> None:
             pass
 
 
+def build_dashboard_top_nav_options(user: dict[str, Any]) -> list[tuple[str, str]]:
+    feature_flags = get_effective_dashboard_feature_flags(user)
+    options: list[tuple[str, str]] = [
+        ("Home", "home"),
+        ("Recent Chats", "chats"),
+        ("Recent Scores", "scores"),
+    ]
+    if feature_flags.get("careers", False):
+        options.append(("ZoSwi Careers", "careers"))
+    if feature_flags.get("ai_workspace", False):
+        options.append((ZOSWI_LIVE_WORKSPACE_NAME, "ai_workspace"))
+    if feature_flags.get("coding_room", False):
+        options.append(("AI Coding Room", "coding_room"))
+    if feature_flags.get("live_interview", False):
+        options.append(("Live AI Interview", "live_interview"))
+    if feature_flags.get("immigration_updates", False):
+        options.append(("Immigration Updates", "immigration_updates"))
+    return options
+
+
+def render_dashboard_top_navigation(user: dict[str, Any]) -> None:
+    options = build_dashboard_top_nav_options(user)
+    if not options:
+        return
+
+    labels = [label for label, _ in options]
+    label_to_view = {label: view for label, view in options}
+    current_view = str(st.session_state.get("dashboard_view", "home")).strip().lower()
+    selected_label_default = next((label for label, view in options if view == current_view), labels[0])
+
+    full_name_raw = str(user.get("full_name", "")).strip()
+    first_name = html.escape(full_name_raw.split()[0] if full_name_raw else "Candidate")
+    greeting = html.escape(time_based_greeting())
+    st.markdown(
+        (
+            '<div class="dashboard-shell-header">'
+            f'<div class="dashboard-shell-title">{greeting}, {first_name}</div>'
+            '<div class="dashboard-shell-subtitle">Choose what you want to work on next across careers, workspace, interviews, and coding.</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    selected_label = None
+    with st.container(key="dashboard_top_nav_shell"):
+        try:
+            selected_label = st.segmented_control(
+                "Navigation",
+                options=labels,
+                selection_mode="single",
+                default=selected_label_default,
+                key="dashboard_top_nav",
+                label_visibility="collapsed",
+            )
+        except Exception:
+            selected_index = labels.index(selected_label_default) if selected_label_default in labels else 0
+            selected_label = st.radio(
+                "Navigation",
+                options=labels,
+                index=selected_index,
+                key="dashboard_top_nav_fallback",
+                horizontal=True,
+                label_visibility="collapsed",
+            )
+
+    if not selected_label:
+        return
+
+    next_view = str(label_to_view.get(str(selected_label), current_view or "home")).strip().lower()
+    if next_view == "coding_room" and not bool(st.session_state.get("analysis_result")):
+        st.caption("AI Coding Room unlocks after your first resume analysis.")
+        return
+    if next_view != current_view:
+        st.session_state.dashboard_view = next_view
+        if next_view != "scores":
+            st.session_state.bot_open = False
+        st.rerun()
+
+
 def render_candidate_sidebar(user: dict[str, Any]) -> None:
-    user_id = int(user.get("id") or 0)
-    backfill_default_chat_titles(user_id)
     user_menu_open = bool(st.session_state.get("user_menu_open", False))
     is_mobile = is_mobile_browser()
     full_name_raw = str(user.get("full_name", "")).strip()
@@ -11839,6 +12042,7 @@ def render_main_screen() -> None:
     sync_bot_for_logged_in_user()
     ensure_quick_links_in_message_state("bot_messages")
     ensure_quick_links_in_message_state("ai_workspace_messages")
+    render_dashboard_top_navigation(user)
     render_candidate_sidebar(user)
 
     view = str(st.session_state.get("dashboard_view", "home")).strip().lower()
@@ -11892,6 +12096,7 @@ def get_current_session_user() -> Any:
 def main() -> None:
     config = PageConfigDTO(page_title="Resume AI Checker", layout="wide", initial_sidebar_state="auto")
     handlers = AppRuntimeHandlersDTO(
+        bootstrap_runtime=bootstrap_runtime,
         init_db=init_db,
         init_state=init_state,
         sync_promo_codes_from_secrets=sync_promo_codes_from_secrets,

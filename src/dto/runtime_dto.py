@@ -13,6 +13,7 @@ class PageConfigDTO:
 
 @dataclass(frozen=True)
 class AppRuntimeHandlersDTO:
+    bootstrap_runtime: Callable[[], None]
     init_db: Callable[[], None]
     init_state: Callable[[], None]
     sync_promo_codes_from_secrets: Callable[[], None]
@@ -21,4 +22,3 @@ class AppRuntimeHandlersDTO:
     render_auth_screen: Callable[[], None]
     render_main_screen: Callable[[], None]
     get_current_user: Callable[[], Any]
-

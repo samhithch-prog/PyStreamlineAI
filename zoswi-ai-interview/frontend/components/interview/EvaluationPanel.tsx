@@ -1,6 +1,6 @@
 "use client";
 
-import type { EvaluationSignals } from "@/lib/types";
+import type { EvaluationSignals } from "../../lib/types";
 
 type EvaluationPanelProps = {
   signals: EvaluationSignals | null;

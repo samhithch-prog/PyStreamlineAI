@@ -40,6 +40,37 @@ def render_app_styles() -> None:
             color: var(--ai-muted);
             font-size: 0.98rem;
         }
+        .dashboard-shell-header {
+            margin: 0 0 0.62rem 0;
+            padding: 0.72rem 0.8rem;
+            border: 1px solid #dbeafe;
+            border-radius: 12px;
+            background: linear-gradient(115deg, rgba(255, 255, 255, 0.95) 0%, rgba(239, 246, 255, 0.92) 100%);
+        }
+        .dashboard-shell-title {
+            margin: 0;
+            color: #0f172a;
+            font-size: 1.03rem;
+            font-weight: 800;
+            letter-spacing: 0.01em;
+        }
+        .dashboard-shell-subtitle {
+            margin-top: 0.16rem;
+            color: #475569;
+            font-size: 0.84rem;
+            line-height: 1.35;
+        }
+        .st-key-dashboard_top_nav_shell {
+            margin: 0 0 0.85rem 0;
+            padding: 0.16rem 0.3rem 0.2rem 0.3rem;
+            border: 1px solid #dbeafe;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.84);
+        }
+        .st-key-dashboard_top_nav_shell [data-baseweb="tag"] {
+            border-radius: 999px !important;
+            font-weight: 700 !important;
+        }
         .ai-card {
             border: 1px solid var(--ai-line);
             background: var(--ai-card);
@@ -1988,13 +2019,18 @@ def render_app_styles() -> None:
         </style>
         <script>
         (function () {
+            const hostWin = window.parent && window.parent.document ? window.parent : window;
+            const hostDoc = hostWin && hostWin.document ? hostWin.document : document;
+            if (!hostDoc || !hostDoc.body) {
+                return;
+            }
             function hideSubmitHints() {
                 const hintTexts = new Set([
                     "",
                     "press enter to apply",
                     "press enter to submit",
                 ]);
-                const nodes = document.querySelectorAll("div, span, p, small, label");
+                const nodes = hostDoc.querySelectorAll("div, span, p, small, label");
                 nodes.forEach((el) => {
                     const text = (el.textContent || "").trim().toLowerCase();
                     if (hintTexts.has(text)) {
@@ -2003,8 +2039,12 @@ def render_app_styles() -> None:
                 });
             }
             hideSubmitHints();
+            if (hostWin.__zoswiSubmitHintsObserverActive) {
+                return;
+            }
+            hostWin.__zoswiSubmitHintsObserverActive = true;
             const observer = new MutationObserver(() => hideSubmitHints());
-            observer.observe(document.body, { childList: true, subtree: true });
+            observer.observe(hostDoc.body, { childList: true, subtree: true });
         })();
         </script>
         """,

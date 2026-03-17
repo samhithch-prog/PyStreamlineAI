@@ -22,6 +22,7 @@ def test_auth_dto_dataclasses_are_constructible() -> None:
 def test_runtime_dto_dataclasses_are_constructible() -> None:
     called: list[str] = []
     handlers = AppRuntimeHandlersDTO(
+        bootstrap_runtime=lambda: called.append("bootstrap"),
         init_db=lambda: called.append("init_db"),
         init_state=lambda: called.append("init_state"),
         sync_promo_codes_from_secrets=lambda: called.append("sync_promo"),
@@ -33,9 +34,9 @@ def test_runtime_dto_dataclasses_are_constructible() -> None:
     )
     config = PageConfigDTO(page_title="Resume AI Checker")
 
-    handlers.init_db()
+    handlers.bootstrap_runtime()
     handlers.render_auth_screen()
 
-    assert called == ["init_db", "render_auth"]
+    assert called == ["bootstrap", "render_auth"]
     assert config.page_title == "Resume AI Checker"
     assert config.layout == "wide"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,6 +10,8 @@ from src.service.immigration_updates_service import (
     IMMIGRATION_REFRESH_SETTING_KEY,
     ImmigrationUpdatesService,
 )
+
+AUTO_REFRESH_CHECK_INTERVAL_SECONDS = 60
 
 
 def _parse_iso_to_local(raw_value: str) -> str:
@@ -132,6 +135,8 @@ def render_immigration_updates_view(user: dict[str, Any]) -> None:
         st.session_state.immigration_feed_page_size = 8
     if "immigration_feed_result_token" not in st.session_state:
         st.session_state.immigration_feed_result_token = ""
+    if "immigration_auto_refresh_checked_at" not in st.session_state:
+        st.session_state.immigration_auto_refresh_checked_at = 0.0
 
     st.markdown(
         """
@@ -337,6 +342,7 @@ def render_immigration_updates_view(user: dict[str, Any]) -> None:
         _cached_recent_alerts.clear()
         _cached_refresh_setting.clear()
         st.session_state.immigration_last_refresh_message = refresh_result.message
+        st.session_state.immigration_auto_refresh_checked_at = time.time()
         st.session_state.immigration_ai_brief = ""
         st.session_state.immigration_live_search_token = ""
         st.session_state.immigration_live_search_note = ""
@@ -347,12 +353,16 @@ def render_immigration_updates_view(user: dict[str, Any]) -> None:
         st.session_state.immigration_feed_page = 1
         st.session_state.immigration_feed_result_token = ""
     else:
-        refresh_result = service.refresh_updates(force=False, interval_hours=6)
-        if refresh_result.refreshed:
-            _cached_search_updates.clear()
-            _cached_recent_alerts.clear()
-            _cached_refresh_setting.clear()
-            st.session_state.immigration_last_refresh_message = refresh_result.message
+        now_ts = time.time()
+        last_check_ts = float(st.session_state.get("immigration_auto_refresh_checked_at", 0.0) or 0.0)
+        if now_ts - last_check_ts >= AUTO_REFRESH_CHECK_INTERVAL_SECONDS:
+            refresh_result = service.refresh_updates(force=False, interval_hours=6)
+            st.session_state.immigration_auto_refresh_checked_at = now_ts
+            if refresh_result.refreshed:
+                _cached_search_updates.clear()
+                _cached_recent_alerts.clear()
+                _cached_refresh_setting.clear()
+                st.session_state.immigration_last_refresh_message = refresh_result.message
 
     with st.container(key="immigration_filter_buttons"):
         st.markdown("**Quick Filters**")
