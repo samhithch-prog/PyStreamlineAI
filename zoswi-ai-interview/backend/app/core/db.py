@@ -20,6 +20,8 @@ def _normalize_database_url(database_url: str) -> str:
         normalized = normalized.replace("postgresql+psycopg2://", "postgresql+psycopg://", 1)
     elif normalized.startswith("postgresql://"):
         normalized = normalized.replace("postgresql://", "postgresql+psycopg://", 1)
+    elif normalized.startswith("sqlite://") and not normalized.startswith("sqlite+aiosqlite://"):
+        normalized = normalized.replace("sqlite://", "sqlite+aiosqlite://", 1)
 
     return normalized
 
