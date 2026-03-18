@@ -61,21 +61,35 @@ async def _run_lightweight_migrations(connection) -> None:
         return
 
     if dialect_name in {"postgresql", "postgres"}:
-        exists_result = await connection.execute(
+        # Ensure enum types exist for older Supabase databases that predate the current schema.
+        await connection.execute(
             text(
                 """
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_name = 'interview_sessions'
-                  AND column_name = 'interview_type'
-                LIMIT 1
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'interview_status') THEN
+                        CREATE TYPE interview_status AS ENUM ('in_progress', 'completed');
+                    END IF;
+                    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'transcript_speaker') THEN
+                        CREATE TYPE transcript_speaker AS ENUM ('ai', 'candidate', 'system');
+                    END IF;
+                END $$;
                 """
             )
         )
-        if exists_result.first() is None:
-            await connection.execute(
-                text(
-                    "ALTER TABLE interview_sessions "
-                    "ADD COLUMN IF NOT EXISTS interview_type VARCHAR(32) NOT NULL DEFAULT 'mixed'"
-                )
-            )
+
+        postgres_alter_statements = [
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS interview_type VARCHAR(32) NOT NULL DEFAULT 'mixed'",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS status interview_status NOT NULL DEFAULT 'in_progress'",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS current_question TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS turn_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS max_turns INTEGER NOT NULL DEFAULT 5",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS transcript_history JSONB NOT NULL DEFAULT '[]'::jsonb",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS evaluation_signals JSONB NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            "ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+        ]
+        for statement in postgres_alter_statements:
+            await connection.execute(text(statement))
