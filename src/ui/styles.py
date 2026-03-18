@@ -1926,6 +1926,54 @@ def render_app_styles() -> None:
             [data-testid="stSidebar"] {
                 width: min(86vw, 320px) !important;
             }
+            .st-key-oauth_social_stack {
+                margin-top: 0 !important;
+            }
+            .st-key-oauth_login_btn button,
+            .st-key-oauth_login_btn [data-testid^="baseButton"],
+            .st-key-oauth_login_linkedin_btn button,
+            .st-key-oauth_login_linkedin_btn [data-testid^="baseButton"] {
+                min-height: 2.35rem !important;
+                font-size: 0.9rem !important;
+            }
+            .st-key-login_form_shell {
+                border-radius: 14px !important;
+                padding: 0.66rem 0.72rem 0.5rem 0.72rem !important;
+                box-shadow: 0 10px 20px rgba(14, 116, 144, 0.12) !important;
+            }
+            .st-key-login_form_center [data-testid="stTextInputRootElement"] input {
+                min-height: 2.3rem !important;
+                font-size: 0.96rem !important;
+            }
+            .st-key-login_submit_btn .stButton,
+            .st-key-login_submit_btn [data-testid="stElementContainer"] {
+                width: 100% !important;
+            }
+            .st-key-login_submit_btn button,
+            .st-key-login_submit_btn [data-testid="baseButton-primary"] {
+                width: 100% !important;
+                min-height: 2.25rem !important;
+                font-size: 0.9rem !important;
+            }
+            .st-key-login_forgot_reset_btn .stButton {
+                justify-content: flex-end !important;
+            }
+            .st-key-auth_privacy_center_link .stButton,
+            .st-key-auth_privacy_center_link [data-testid="stElementContainer"] {
+                justify-content: center !important;
+                padding-right: 0 !important;
+            }
+            .st-key-auth_privacy_center_link .stButton > button,
+            .st-key-auth_privacy_center_link button,
+            .st-key-auth_privacy_center_link [data-testid^="baseButton"] {
+                border: 1px solid #cbd5e1 !important;
+                background: #f8fafc !important;
+                color: #334155 !important;
+                border-radius: 10px !important;
+                font-size: 0.76rem !important;
+                padding: 0.3rem 0.55rem !important;
+                min-height: 2rem !important;
+            }
             .st-key-sidebar_signed_row [data-testid="stHorizontalBlock"] {
                 align-items: center !important;
                 gap: 0.3rem !important;

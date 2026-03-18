@@ -32,11 +32,11 @@ def test_runtime_dto_dataclasses_are_constructible() -> None:
         render_main_screen=lambda: called.append("render_main"),
         get_current_user=lambda: None,
     )
-    config = PageConfigDTO(page_title="Resume AI Checker")
+    config = PageConfigDTO(page_title="Career Command Centre")
 
     handlers.bootstrap_runtime()
     handlers.render_auth_screen()
 
     assert called == ["bootstrap", "render_auth"]
-    assert config.page_title == "Resume AI Checker"
+    assert config.page_title == "Career Command Centre"
     assert config.layout == "wide"

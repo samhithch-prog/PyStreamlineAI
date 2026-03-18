@@ -1,6 +1,37 @@
 import Link from "next/link";
 
-export default function HomePage() {
+type HomePageProps = {
+  searchParams?: Record<string, string | string[] | undefined>;
+};
+
+function getFirstQueryValue(value: string | string[] | undefined) {
+  if (Array.isArray(value)) {
+    return String(value[0] || "").trim();
+  }
+  return String(value || "").trim();
+}
+
+export default function HomePage({ searchParams }: HomePageProps) {
+  const query = new URLSearchParams();
+  const candidate = getFirstQueryValue(searchParams?.candidate);
+  const role = getFirstQueryValue(searchParams?.role);
+  const type = getFirstQueryValue(searchParams?.type);
+  const source = getFirstQueryValue(searchParams?.source);
+
+  if (candidate) {
+    query.set("candidate", candidate);
+  }
+  if (role) {
+    query.set("role", role);
+  }
+  if (type) {
+    query.set("type", type);
+  }
+  if (source) {
+    query.set("source", source);
+  }
+  const interviewHref = query.size > 0 ? `/interview?${query.toString()}` : "/interview";
+
   return (
     <main className="relative mx-auto flex min-h-screen max-w-6xl flex-col items-center justify-center px-6 py-12">
       <Link
@@ -23,7 +54,7 @@ export default function HomePage() {
           High-impact live interview practice with adaptive AI questioning, natural voice conversation, and actionable feedback.
         </p>
         <Link
-          href="/interview"
+          href={interviewHref}
           className="mt-8 inline-flex items-center justify-center rounded-xl border border-cyan-200/30 bg-cyan-400/90 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300"
         >
           Enter Interview Room

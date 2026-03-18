@@ -585,8 +585,11 @@ def get_zoswi_live_interview_base_url() -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     path = str(parsed.path or "").strip()
-    if not path or path == "/":
-        path = "/interview"
+    if not path:
+        path = "/"
+    # Streamlit should land on frontend home first; keep explicit custom paths.
+    if path.rstrip("/") == "/interview":
+        path = "/"
     base = f"{parsed.scheme}://{parsed.netloc}{path}"
     if parsed.query:
         base = f"{base}?{parsed.query}"
@@ -2589,6 +2592,10 @@ def is_mobile_browser() -> bool:
     return bool(is_mobile)
 
 
+def should_auto_open_bot_after_auth() -> bool:
+    return not is_mobile_browser()
+
+
 def send_email_verification_otp(
     user_id: int,
     email: str,
@@ -3636,7 +3643,7 @@ def sync_user_from_oauth_session() -> None:
     st.session_state.user = user
     st.session_state.bot_user_email = None
     st.session_state.active_chat_id = None
-    st.session_state.bot_open = True
+    st.session_state.bot_open = should_auto_open_bot_after_auth()
     st.session_state.bot_messages = default_bot_messages(full_name)
     st.session_state.bot_pending_prompt = None
     st.session_state.zoswi_submit = False
@@ -7488,7 +7495,7 @@ def sync_bot_for_logged_in_user() -> None:
         backfill_default_chat_titles(user_id)
         full_name = str(user.get("full_name", "")).strip()
         st.session_state.bot_user_email = email
-        st.session_state.bot_open = True
+        st.session_state.bot_open = should_auto_open_bot_after_auth()
         st.session_state.active_chat_id = None
         st.session_state.bot_messages = default_bot_messages(full_name)
         st.session_state.bot_pending_prompt = None
@@ -10940,7 +10947,7 @@ def render_auth_screen() -> None:
     if bool(st.session_state.get("auth_privacy_center_open", False)):
         title_col, actions_col = st.columns([20, 1.2], gap="small")
         with title_col:
-            st.title("Resume AI Checker")
+            st.title("Career Command Centre")
         with actions_col:
             with st.container(key="auth_privacy_header_actions"):
                 support_col, close_col = st.columns([1, 1], gap="small")
@@ -10977,7 +10984,7 @@ def render_auth_screen() -> None:
         render_auth_privacy_center_page(logo_data_uri)
         render_auth_privacy_support_sheet()
         return
-    st.title("Resume AI Checker")
+    st.title("Career Command Centre")
     apply_pending_signup_form_reset()
     apply_pending_password_reset_form_reset()
     if "auth_view_selector" not in st.session_state:
@@ -10985,8 +10992,13 @@ def render_auth_screen() -> None:
     quote_role_context = "login"
     if normalize_auth_view(str(st.session_state.get("auth_view_selector", "Login"))) == "Create Account":
         quote_role_context = str(st.session_state.get("signup_role_selector", "Candidate")).strip().lower()
+    is_mobile = is_mobile_browser()
 
-    oauth_col, account_col = st.columns(2, gap="large")
+    if is_mobile:
+        oauth_col = st.container()
+        account_col = st.container()
+    else:
+        oauth_col, account_col = st.columns(2, gap="large")
 
     with oauth_col:
         if is_streamlit_oauth_configured():
@@ -10999,9 +11011,13 @@ def render_auth_screen() -> None:
                 google_available = False
                 linkedin_available = False
 
-            st.markdown("<div style='height:2in;'></div>", unsafe_allow_html=True)
+            oauth_top_spacing = "0.6rem" if is_mobile else "2in"
+            st.markdown(f"<div style='height:{oauth_top_spacing};'></div>", unsafe_allow_html=True)
             with st.container(key="oauth_social_stack"):
-                left_space, button_col, right_space = st.columns([1,2,1], gap="large")
+                if is_mobile:
+                    button_col = st.container()
+                else:
+                    left_space, button_col, right_space = st.columns([1, 2, 1], gap="large")
                 with button_col:
                     if redirect_mismatch:
                         st.error("OAuth redirect URI is set to localhost and cannot work on this deployed app.")
@@ -11056,15 +11072,29 @@ def render_auth_screen() -> None:
                         st.caption("LinkedIn OAuth is not configured yet.")
                     if promo_enabled:
                         with st.container(key="oauth_promo_code"):
-                            promo_input_col, promo_send_col = st.columns([5, 1], gap="small")
-                            with promo_input_col:
+                            apply_promo = False
+                            if is_mobile:
                                 promo_code_text = st.text_input(
                                     "Have a promo code",
                                     key="auth_promo_code",
                                     placeholder="Have a promo code",
                                     label_visibility="collapsed",
                                 )
-
+                                apply_promo = st.button(
+                                    "Apply Promo Code",
+                                    key="oauth_promo_send",
+                                    help="Apply promo code",
+                                    use_container_width=True,
+                                )
+                            else:
+                                promo_input_col, promo_send_col = st.columns([5, 1], gap="small")
+                                with promo_input_col:
+                                    promo_code_text = st.text_input(
+                                        "Have a promo code",
+                                        key="auth_promo_code",
+                                        placeholder="Have a promo code",
+                                        label_visibility="collapsed",
+                                    )
                             normalized_current = normalize_promo_code(promo_code_text)
                             checked_code = normalize_promo_code(
                                 str(st.session_state.get("auth_promo_checked_code", ""))
@@ -11073,13 +11103,14 @@ def render_auth_screen() -> None:
                                 st.session_state.auth_promo_valid = False
                                 st.session_state.auth_promo_status = ""
 
-                            with promo_send_col:
-                                apply_promo = st.button(
-                                    "\u2192",
-                                    key="oauth_promo_send",
-                                    help="Apply promo code",
-                                    use_container_width=True,
-                                )
+                            if not is_mobile:
+                                with promo_send_col:
+                                    apply_promo = st.button(
+                                        "\u2192",
+                                        key="oauth_promo_send",
+                                        help="Apply promo code",
+                                        use_container_width=True,
+                                    )
 
                             if apply_promo:
                                 ok_promo, promo_msg, normalized_code = validate_promo_code(promo_code_text)
@@ -11093,12 +11124,18 @@ def render_auth_screen() -> None:
                                     st.success(promo_status_text)
                                 else:
                                     st.error(promo_status_text)
-                    spacer_height = "3.2rem" if promo_enabled else "5.8rem"
+                    if is_mobile:
+                        spacer_height = "1rem" if promo_enabled else "1.4rem"
+                    else:
+                        spacer_height = "3.2rem" if promo_enabled else "5.8rem"
                     st.markdown(f"<div style='height:{spacer_height};'></div>", unsafe_allow_html=True)
                     with st.container(key="oauth_motivation_popup"):
                         render_auth_motivation_quote_box(quote_role_context)
         else:
-            st.info("Google OAuth is not configured yet. Use login or create account on the right.")
+            if is_mobile:
+                st.info("Google OAuth is not configured yet. Use login or create account below.")
+            else:
+                st.info("Google OAuth is not configured yet. Use login or create account on the right.")
 
     with account_col:
         st.caption("Create an account or log in to start resume-job matching.")
@@ -11110,33 +11147,40 @@ def render_auth_screen() -> None:
             "Auth View",
             options=["Login", "Create Account"],
             key="auth_view_selector",
-            horizontal=True,
+            horizontal=not is_mobile,
             label_visibility="collapsed",
         )
         sync_auth_view_query_param(auth_view)
 
         if auth_view == "Login":
+            email = ""
+            password = ""
+            open_reset = False
+            submit = False
             with st.container(key="login_form_shell"):
                 with st.form("login_form"):
-                    left_gap, center_col, right_gap = st.columns([1, 3, 1], gap="small")
-                    with center_col:
+                    form_scope = st.container()
+                    if not is_mobile:
+                        left_gap, center_col, right_gap = st.columns([1, 3, 1], gap="small")
+                        form_scope = center_col
+                    with form_scope:
                         with st.container(key="login_form_center"):
                             email = st.text_input("Email")
                             password = st.text_input("Password", type="password")
-                            open_reset = False
-                            with st.container(key="login_forgot_row"):
-                                st.markdown(
-                                    '<div class="auth-forgot-label">Don\'t remember your password?</div>',
-                                    unsafe_allow_html=True,
-                                )
-                                with st.container(key="login_forgot_reset_btn"):
-                                    open_reset = st.form_submit_button(
-                                        "reset",
-                                        use_container_width=False,
-                                    )
                             with st.container(key="login_actions"):
                                 with st.container(key="login_submit_btn"):
-                                    submit = st.form_submit_button("Login", use_container_width=False, type="primary")
+                                    submit = st.form_submit_button("Login", use_container_width=is_mobile, type="primary")
+            with st.container(key="login_forgot_row"):
+                st.markdown(
+                    '<div class="auth-forgot-label">Don\'t remember your password?</div>',
+                    unsafe_allow_html=True,
+                )
+                with st.container(key="login_forgot_reset_btn"):
+                    open_reset = st.button(
+                        "reset",
+                        key="login_open_reset_btn",
+                        use_container_width=is_mobile,
+                    )
             login_email_prefill = str(email or "").strip().lower()
             if open_reset:
                 st.session_state.password_reset_flow_open = True
@@ -11173,7 +11217,7 @@ def render_auth_screen() -> None:
                     full_name = str(user.get("full_name", "")).strip()
                     st.session_state.bot_user_email = None
                     st.session_state.active_chat_id = None
-                    st.session_state.bot_open = True
+                    st.session_state.bot_open = should_auto_open_bot_after_auth()
                     st.session_state.bot_messages = default_bot_messages(full_name)
                     st.session_state.bot_pending_prompt = None
                     st.session_state.zoswi_submit = False
@@ -11236,14 +11280,18 @@ def render_auth_screen() -> None:
                 role = st.radio(
                     "I am a",
                     options=["Candidate", "Student", "Recruiter"],
-                    horizontal=True,
+                    horizontal=not is_mobile,
                     key="signup_role_selector",
                 )
-                first_name_col, last_name_col = st.columns(2, gap="small")
-                with first_name_col:
+                if is_mobile:
                     first_name = st.text_input("First Name", key="signup_first_name")
-                with last_name_col:
                     last_name = st.text_input("Last Name", key="signup_last_name")
+                else:
+                    first_name_col, last_name_col = st.columns(2, gap="small")
+                    with first_name_col:
+                        first_name = st.text_input("First Name", key="signup_first_name")
+                    with last_name_col:
+                        last_name = st.text_input("Last Name", key="signup_last_name")
                 email_label = "Email"
                 if role == "Student":
                     email_label = "Personal Email"
@@ -11301,16 +11349,13 @@ def render_auth_screen() -> None:
                         "recruiter_title": recruiter_title,
                         "hiring_focus": hiring_focus,
                     }
-                password_col, password_status_col = st.columns([4, 2], gap="small")
-                with password_col:
+                if is_mobile:
                     password = st.text_input("Password", type="password", key="signup_password")
                     confirm_password = st.text_input(
                         "Re-enter Password",
                         type="password",
                         key="signup_confirm_password",
                     )
-                with password_status_col:
-                    st.markdown("<div style='height:1.9rem;'></div>", unsafe_allow_html=True)
                     password_policy = get_password_policy_status(password)
                     render_password_policy_checklist(password_policy, password, confirm_password)
                     if password and confirm_password and password != confirm_password:
@@ -11320,6 +11365,26 @@ def render_auth_screen() -> None:
                             "</span>",
                             unsafe_allow_html=True,
                         )
+                else:
+                    password_col, password_status_col = st.columns([4, 2], gap="small")
+                    with password_col:
+                        password = st.text_input("Password", type="password", key="signup_password")
+                        confirm_password = st.text_input(
+                            "Re-enter Password",
+                            type="password",
+                            key="signup_confirm_password",
+                        )
+                    with password_status_col:
+                        st.markdown("<div style='height:1.9rem;'></div>", unsafe_allow_html=True)
+                        password_policy = get_password_policy_status(password)
+                        render_password_policy_checklist(password_policy, password, confirm_password)
+                        if password and confirm_password and password != confirm_password:
+                            st.markdown(
+                                "<span style='color:#dc2626;font-size:0.86rem;font-weight:600;'>"
+                                "The password entered is wrong."
+                                "</span>",
+                                unsafe_allow_html=True,
+                            )
                 password_policy_ok = bool(
                     password_policy["min_length"]
                     and password_policy["has_upper"]
@@ -11330,6 +11395,7 @@ def render_auth_screen() -> None:
                     "Create Account",
                     key="signup_submit_btn",
                     disabled=not (password_policy_ok and passwords_match),
+                    use_container_width=is_mobile,
                 )
                 if submit_signup:
                     cleaned_first_name = str(first_name or "").strip()
@@ -11414,15 +11480,22 @@ def render_auth_screen() -> None:
 
         render_email_verification_panel()
         with st.container(key="auth_privacy_center_link"):
-            spacer_col, privacy_col = st.columns([8.2, 1.8], gap="small")
-            with spacer_col:
-                st.markdown("", unsafe_allow_html=True)
-            with privacy_col:
+            if is_mobile:
                 privacy_center_toggle = st.button(
                     "Privacy Center",
                     key="auth_privacy_center_toggle_btn",
                     use_container_width=True,
                 )
+            else:
+                spacer_col, privacy_col = st.columns([8.2, 1.8], gap="small")
+                with spacer_col:
+                    st.markdown("", unsafe_allow_html=True)
+                with privacy_col:
+                    privacy_center_toggle = st.button(
+                        "Privacy Center",
+                        key="auth_privacy_center_toggle_btn",
+                        use_container_width=True,
+                    )
         if privacy_center_toggle:
             next_open = not bool(st.session_state.get("auth_privacy_center_open", False))
             st.session_state.auth_privacy_center_open = next_open
@@ -12101,7 +12174,7 @@ def get_current_session_user() -> Any:
 
 
 def main() -> None:
-    config = PageConfigDTO(page_title="Resume AI Checker", layout="wide", initial_sidebar_state="auto")
+    config = PageConfigDTO(page_title="Career Command Centre", layout="wide", initial_sidebar_state="auto")
     handlers = AppRuntimeHandlersDTO(
         bootstrap_runtime=bootstrap_runtime,
         init_db=init_db,
