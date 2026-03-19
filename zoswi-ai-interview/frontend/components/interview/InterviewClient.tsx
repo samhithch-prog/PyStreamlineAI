@@ -124,7 +124,7 @@ export function InterviewClient() {
       let token = getClientAccessToken();
       if (!token) {
         const params = new URLSearchParams(window.location.search);
-        const launchToken = String(params.get("launch_token") || "").trim();
+        const launchToken = String(params.get("launch_token") || params.get("amp;launch_token") || "").trim();
         if (launchToken) {
           try {
             const launchResponse = await exchangeStreamlitLaunchToken(launchToken);
@@ -133,6 +133,7 @@ export function InterviewClient() {
               window.localStorage.setItem("zoswi_access_token", accessToken);
               token = accessToken;
               params.delete("launch_token");
+              params.delete("amp;launch_token");
               const nextQuery = params.toString();
               const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
               window.history.replaceState({}, "", nextUrl);
