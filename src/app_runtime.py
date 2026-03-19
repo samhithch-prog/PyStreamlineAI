@@ -595,54 +595,45 @@ def normalize_interview_auth_role(raw_value: str) -> str:
 
 
 def get_interview_launch_secret() -> str:
-    value = get_config_value(
-        "STREAMLIT_LAUNCH_SECRET",
-        "interview",
-        "launch_secret",
-        "",
-    )
-    if value:
-        return value
-    return get_config_value(
-        "ZOSWI_INTERVIEW_LAUNCH_SECRET",
-        "interview",
-        "launch_secret",
-        "",
-    )
+    candidates = [
+        ("STREAMLIT_LAUNCH_SECRET", "", "", ""),
+        ("ZOSWI_INTERVIEW_LAUNCH_SECRET", "", "", ""),
+        ("STREAMLIT_LAUNCH_SECRET", "interview", "launch_secret", ""),
+        ("ZOSWI_INTERVIEW_LAUNCH_SECRET", "interview", "launch_secret", ""),
+    ]
+    for env_key, section, secret_key, default in candidates:
+        value = get_config_value(env_key, section, secret_key, default).strip()
+        if value:
+            return value
+    return ""
 
 
 def get_interview_launch_issuer() -> str:
-    value = get_config_value(
-        "STREAMLIT_LAUNCH_ISSUER",
-        "interview",
-        "launch_issuer",
-        "",
-    ).strip()
-    if not value:
-        value = get_config_value(
-            "ZOSWI_INTERVIEW_LAUNCH_ISSUER",
-            "interview",
-            "launch_issuer",
-            "zoswi-streamlit",
-        )
-    return (value or "zoswi-streamlit").strip()
+    candidates = [
+        ("STREAMLIT_LAUNCH_ISSUER", "", "", ""),
+        ("ZOSWI_INTERVIEW_LAUNCH_ISSUER", "", "", ""),
+        ("STREAMLIT_LAUNCH_ISSUER", "interview", "launch_issuer", ""),
+        ("ZOSWI_INTERVIEW_LAUNCH_ISSUER", "interview", "launch_issuer", ""),
+    ]
+    for env_key, section, secret_key, default in candidates:
+        value = get_config_value(env_key, section, secret_key, default).strip()
+        if value:
+            return value
+    return "zoswi-streamlit"
 
 
 def get_interview_launch_audience() -> str:
-    value = get_config_value(
-        "STREAMLIT_LAUNCH_AUDIENCE",
-        "interview",
-        "launch_audience",
-        "",
-    ).strip()
-    if not value:
-        value = get_config_value(
-            "ZOSWI_INTERVIEW_LAUNCH_AUDIENCE",
-            "interview",
-            "launch_audience",
-            "zoswi-interview-launch",
-        )
-    return (value or "zoswi-interview-launch").strip()
+    candidates = [
+        ("STREAMLIT_LAUNCH_AUDIENCE", "", "", ""),
+        ("ZOSWI_INTERVIEW_LAUNCH_AUDIENCE", "", "", ""),
+        ("STREAMLIT_LAUNCH_AUDIENCE", "interview", "launch_audience", ""),
+        ("ZOSWI_INTERVIEW_LAUNCH_AUDIENCE", "interview", "launch_audience", ""),
+    ]
+    for env_key, section, secret_key, default in candidates:
+        value = get_config_value(env_key, section, secret_key, default).strip()
+        if value:
+            return value
+    return "zoswi-interview-launch"
 
 
 def get_interview_jwt_algorithm() -> str:
@@ -650,24 +641,25 @@ def get_interview_jwt_algorithm() -> str:
 
 
 def get_interview_launch_ttl_seconds() -> int:
-    configured = get_config_value(
-        "STREAMLIT_LAUNCH_TOKEN_TTL_SECONDS",
-        "interview",
-        "launch_token_ttl_seconds",
-        "",
-    ).strip()
+    configured = ""
+    candidates = [
+        ("STREAMLIT_LAUNCH_TOKEN_TTL_SECONDS", "", "", ""),
+        ("ZOSWI_INTERVIEW_LAUNCH_TOKEN_TTL_SECONDS", "", "", ""),
+        ("STREAMLIT_LAUNCH_TOKEN_TTL_SECONDS", "interview", "launch_token_ttl_seconds", ""),
+        ("ZOSWI_INTERVIEW_LAUNCH_TOKEN_TTL_SECONDS", "interview", "launch_token_ttl_seconds", ""),
+    ]
+    for env_key, section, secret_key, default in candidates:
+        value = get_config_value(env_key, section, secret_key, default).strip()
+        if value:
+            configured = value
+            break
     if not configured:
-        configured = get_config_value(
-            "ZOSWI_INTERVIEW_LAUNCH_TOKEN_TTL_SECONDS",
-            "interview",
-            "launch_token_ttl_seconds",
-            "60",
-        ).strip()
+        configured = "60"
     return parse_int(
         configured,
         60,
-        minimum=15,
-        maximum=300,
+        15,
+        300,
     )
 
 
