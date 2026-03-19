@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./zoswi_interview.db"
     redis_url: str = ""
 
-    auth_required: bool = False
+    auth_required: bool = True
     jwt_secret_key: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
     jwt_issuer: str = "zoswi-auth"

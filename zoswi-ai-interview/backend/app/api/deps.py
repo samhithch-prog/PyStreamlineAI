@@ -6,7 +6,6 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import AuthContext, UserRole, decode_access_token
-from app.core.config import get_settings
 from app.core.db import get_db
 from app.repositories.interview_repository import InterviewRepository
 from app.services.ai_service import AIService
@@ -17,7 +16,6 @@ from app.services.scoring_engine import ScoringEngine
 ai_service = AIService()
 interview_engine = InterviewEngine()
 scoring_engine = ScoringEngine()
-settings = get_settings()
 
 
 async def get_interview_service(db: AsyncSession = Depends(get_db)) -> InterviewService:
@@ -55,18 +53,7 @@ async def get_current_auth_context(
 ) -> AuthContext:
     token = _extract_bearer_token(authorization)
     if not token:
-        if settings.auth_required:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token.")
-        # Backward-compatible local fallback
-        context = AuthContext(
-            user_id="anonymous-local-user",
-            role=UserRole.candidate,
-            org_id=None,
-            token_type="access",
-            raw_claims={},
-        )
-        request.state.user_id = context.user_id
-        return context
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token.")
     context = decode_access_token(token)
     request.state.user_id = context.user_id
     return context

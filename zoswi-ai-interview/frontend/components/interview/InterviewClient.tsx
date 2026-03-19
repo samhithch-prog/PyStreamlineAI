@@ -85,6 +85,8 @@ function normalizeInterviewType(rawValue: string | null | undefined): InterviewT
 }
 
 export function InterviewClient() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [hasAccessToken, setHasAccessToken] = useState(false);
   const [candidateName, setCandidateName] = useState("");
   const [role, setRole] = useState("Software Engineer");
   const [interviewType, setInterviewType] = useState<InterviewType>("mixed");
@@ -114,6 +116,17 @@ export function InterviewClient() {
   );
   const [activeSpeaker, setActiveSpeaker] = useState<"ai" | "candidate" | "none">("none");
   const [finalResult, setFinalResult] = useState<InterviewResultResponse | null>(null);
+
+  useEffect(() => {
+    const token = getClientAccessToken();
+    const authenticated = token.length > 0;
+    setHasAccessToken(authenticated);
+    setAuthChecked(true);
+    if (!authenticated) {
+      setStatusMessage("Access restricted. Please sign in through ZoSwi and relaunch the interview.");
+      setErrorMessage("Login required. This interview room is available only for authenticated users.");
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -476,6 +489,15 @@ export function InterviewClient() {
     lastGrayFrameRef.current = null;
     focusPollCooldownRef.current = 0;
 
+    const accessToken = getClientAccessToken();
+    if (!accessToken) {
+      setHasAccessToken(false);
+      setStatusMessage("Access restricted. Please sign in through ZoSwi and relaunch the interview.");
+      setErrorMessage("Login required. This interview room is available only for authenticated users.");
+      updateConnectionStatus("idle");
+      return;
+    }
+
     try {
       const mediaConstraints: MediaStreamConstraints = {
         audio: {
@@ -513,39 +535,27 @@ export function InterviewClient() {
       streamRef.current = stream;
       const videoTracks = stream.getVideoTracks();
       setCameraPreviewStream(videoTracks.length > 0 ? new MediaStream(videoTracks) : null);
-      const accessToken = getClientAccessToken();
-      let preStartedSessionId = "";
-      try {
-        const startResponse = await startInterviewSession(
-          {
-            candidate_name: candidateName.trim(),
-            role: role.trim(),
-            interview_type: interviewType
-          },
-          accessToken || undefined
-        );
-        preStartedSessionId = String(startResponse.session_id || "").trim();
-      } catch {
-        // Backward-compatible fallback to websocket-driven start flow.
+      const startResponse = await startInterviewSession(
+        {
+          candidate_name: candidateName.trim(),
+          role: role.trim(),
+          interview_type: interviewType
+        },
+        accessToken
+      );
+      const preStartedSessionId = String(startResponse.session_id || "").trim();
+      if (!preStartedSessionId) {
+        throw new Error("Unable to initialize interview session.");
       }
-
-      let wsToken = "";
-      if (preStartedSessionId) {
-        try {
-          const wsTokenResponse = await createWebSocketToken(preStartedSessionId, accessToken || undefined);
-          wsToken = String(wsTokenResponse.ws_token || "").trim();
-        } catch {
-          wsToken = "";
-        }
+      const wsTokenResponse = await createWebSocketToken(preStartedSessionId, accessToken);
+      const wsToken = String(wsTokenResponse.ws_token || "").trim();
+      if (!wsToken) {
+        throw new Error("Unable to initialize secure websocket session.");
       }
 
       const wsParams: Record<string, string> = {};
-      if (preStartedSessionId) {
-        wsParams.session_id = preStartedSessionId;
-      }
-      if (wsToken) {
-        wsParams.ws_token = wsToken;
-      }
+      wsParams.session_id = preStartedSessionId;
+      wsParams.ws_token = wsToken;
       const socket = new WebSocket(getInterviewWebSocketUrl("/ws/interview", wsParams));
       websocketRef.current = socket;
 
@@ -618,7 +628,8 @@ export function InterviewClient() {
           setIsLive(false);
           updateActiveSpeaker("none");
           if (payload.session_id) {
-            const result = await getInterviewResult(payload.session_id);
+            const token = getClientAccessToken();
+            const result = await getInterviewResult(payload.session_id, token || undefined);
             setFinalResult(result);
           }
           return;
@@ -669,7 +680,8 @@ export function InterviewClient() {
     setStatusMessage("Interview session ended.");
     if (activeSessionId) {
       try {
-        const result = await getInterviewResult(activeSessionId);
+        const token = getClientAccessToken();
+        const result = await getInterviewResult(activeSessionId, token || undefined);
         setFinalResult(result);
       } catch {
         // Ignore fetch errors during forced shutdown.
@@ -1217,6 +1229,7 @@ export function InterviewClient() {
   const canStart =
     !isLive &&
     connectionStatus !== "connecting" &&
+    hasAccessToken &&
     candidateName.trim().length >= 2 &&
     role.trim().length >= 2 &&
     cameraEnabled &&
@@ -1255,6 +1268,26 @@ export function InterviewClient() {
     } catch {
       setErrorMessage("Unable to copy session id.");
     }
+  }
+
+  if (!authChecked) {
+    return (
+      <div className="relative overflow-hidden rounded-[34px] border border-white/20 bg-[linear-gradient(165deg,rgba(16,41,67,0.8),rgba(24,57,88,0.72))] p-5 shadow-[0_24px_70px_rgba(9,24,46,0.35)] sm:p-8">
+        <p className="text-sm text-slate-200">Verifying access...</p>
+      </div>
+    );
+  }
+
+  if (!hasAccessToken) {
+    return (
+      <div className="relative overflow-hidden rounded-[34px] border border-rose-300/35 bg-rose-500/12 p-5 text-rose-100 shadow-[0_24px_70px_rgba(60,9,20,0.22)] sm:p-8">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-rose-100/90">Access Denied</p>
+        <h2 className="mt-2 font-[var(--font-display)] text-2xl font-semibold text-white">Login Required</h2>
+        <p className="mt-3 text-sm leading-relaxed text-rose-100/95">
+          This interview room is restricted. Sign in on ZoSwi first, then relaunch from the dashboard.
+        </p>
+      </div>
+    );
   }
 
   return (

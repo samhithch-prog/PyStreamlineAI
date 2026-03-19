@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from app.api.deps import (
     get_ai_service,
-    get_current_auth_context,
     get_interview_engine,
     get_interview_service,
     get_scoring_engine,
@@ -62,8 +61,7 @@ async def get_interview_result(
     if session is None:
         raise AppError(status_code=404, message="Interview session not found.")
     if (
-        settings.auth_required
-        and auth_ctx.role == UserRole.candidate
+        auth_ctx.role == UserRole.candidate
         and str(session.owner_user_id or "").strip()
         and str(session.owner_user_id).strip() != auth_ctx.user_id
     ):
@@ -87,21 +85,10 @@ async def interview_websocket(websocket: WebSocket):
             bound_session_id = None
 
     try:
-        if settings.auth_required:
-            if not query_ws_token:
-                await websocket.close(code=1008, reason="Missing ws_token")
-                return
-            auth_ctx = decode_ws_token(query_ws_token, expected_session_id=bound_session_id)
-        elif query_ws_token:
-            auth_ctx = decode_ws_token(query_ws_token, expected_session_id=bound_session_id)
-        else:
-            auth_ctx = AuthContext(
-                user_id="anonymous-local-user",
-                role=UserRole.candidate,
-                org_id=None,
-                token_type="ws",
-                raw_claims={},
-            )
+        if not query_ws_token:
+            await websocket.close(code=1008, reason="Missing ws_token")
+            return
+        auth_ctx = decode_ws_token(query_ws_token, expected_session_id=bound_session_id)
     except Exception:
         await websocket.close(code=1008, reason="Invalid websocket token")
         return
@@ -141,7 +128,7 @@ async def interview_websocket(websocket: WebSocket):
                         await websocket.send_json({"type": "error", "message": "Invalid session_id format."})
                         continue
 
-                if settings.auth_required and session_id is None:
+                if session_id is None:
                     await websocket.send_json({"type": "error", "message": "session_id is required for authenticated websocket sessions."})
                     continue
 
@@ -160,8 +147,7 @@ async def interview_websocket(websocket: WebSocket):
                             await websocket.send_json({"type": "error", "message": "Interview session not found."})
                             continue
                         if (
-                            settings.auth_required
-                            and auth_ctx.role == UserRole.candidate
+                            auth_ctx.role == UserRole.candidate
                             and str(existing.owner_user_id or "").strip()
                             and str(existing.owner_user_id).strip() != auth_ctx.user_id
                         ):

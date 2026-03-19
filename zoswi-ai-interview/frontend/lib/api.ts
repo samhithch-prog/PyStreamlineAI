@@ -107,13 +107,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getClientAccessToken() {
   if (typeof window === "undefined") {
-    return String(process.env.NEXT_PUBLIC_DEMO_ACCESS_TOKEN || "").trim();
+    return "";
   }
   const tokenFromStorage = String(window.localStorage.getItem("zoswi_access_token") || "").trim();
-  if (tokenFromStorage) {
-    return tokenFromStorage;
-  }
-  return String(process.env.NEXT_PUBLIC_DEMO_ACCESS_TOKEN || "").trim();
+  return tokenFromStorage;
 }
 
 export function getRecruiterAccessState(accessToken?: string): RecruiterAccessState {
