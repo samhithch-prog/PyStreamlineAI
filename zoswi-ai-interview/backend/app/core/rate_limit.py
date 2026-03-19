@@ -20,24 +20,33 @@ class RateLimiter:
         redis = get_redis_client()
         if redis is None:
             return True, max(0, limit - 1)
-
-        count = await redis.incr(key)
-        if count == 1:
-            await redis.expire(key, max(1, window_seconds))
-        remaining = max(0, int(limit) - int(count))
-        return count <= limit, remaining
+        try:
+            count = await redis.incr(key)
+            if count == 1:
+                await redis.expire(key, max(1, window_seconds))
+            remaining = max(0, int(limit) - int(count))
+            return count <= limit, remaining
+        except Exception:
+            # Fail open if Redis is unavailable to avoid global API outage.
+            return True, max(0, limit - 1)
 
     async def bind_ws_session(self, session_id: str, user_id: str, ttl_seconds: int = 3600) -> None:
         redis = get_redis_client()
         if redis is None:
             return
-        await redis.setex(f"ws:session:{session_id}:user", max(30, int(ttl_seconds)), str(user_id))
+        try:
+            await redis.setex(f"ws:session:{session_id}:user", max(30, int(ttl_seconds)), str(user_id))
+        except Exception:
+            return
 
     async def get_ws_session_user(self, session_id: str) -> str:
         redis = get_redis_client()
         if redis is None:
             return ""
-        return str(await redis.get(f"ws:session:{session_id}:user") or "").strip()
+        try:
+            return str(await redis.get(f"ws:session:{session_id}:user") or "").strip()
+        except Exception:
+            return ""
 
 
 limiter = RateLimiter()

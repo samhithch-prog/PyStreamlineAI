@@ -33,8 +33,12 @@ async def _consume_streamlit_launch_jti(jti: str, ttl_seconds: int) -> bool:
     ttl = max(15, int(ttl_seconds or 15))
     redis = get_redis_client()
     if redis is not None:
-        created = await redis.set(f"auth:streamlit-launch:jti:{cleaned_jti}", "1", ex=ttl, nx=True)
-        return bool(created)
+        try:
+            created = await redis.set(f"auth:streamlit-launch:jti:{cleaned_jti}", "1", ex=ttl, nx=True)
+            return bool(created)
+        except Exception:
+            # Fall back to local in-process store if Redis is unreachable.
+            pass
 
     now_ts = _now_ts()
     expired = [key for key, exp in _local_launch_jti_store.items() if int(exp) <= now_ts]
