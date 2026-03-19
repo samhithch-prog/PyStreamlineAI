@@ -4,6 +4,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.deps import (
     get_ai_service,
@@ -41,14 +42,27 @@ async def start_interview(
     auth_ctx: AuthContext = Depends(require_roles(UserRole.candidate, UserRole.recruiter, UserRole.admin)),
 ) -> StartInterviewResponse:
     interview_type = _normalize_interview_type(payload.interview_type)
-    if auth_ctx.role == UserRole.candidate:
-        await enforce_candidate_interview_limits(auth_ctx.user_id, service.repository.db)
-    return await service.start_interview(
-        payload,
-        interview_type=interview_type,
-        owner_user_id=auth_ctx.user_id,
-        org_id=auth_ctx.org_id or "",
-    )
+    try:
+        if auth_ctx.role == UserRole.candidate:
+            await enforce_candidate_interview_limits(auth_ctx.user_id, service.repository.db)
+        return await service.start_interview(
+            payload,
+            interview_type=interview_type,
+            owner_user_id=auth_ctx.user_id,
+            org_id=auth_ctx.org_id or "",
+        )
+    except AppError:
+        raise
+    except SQLAlchemyError as exc:
+        logger.exception("Database error while starting interview for user_id=%s", auth_ctx.user_id)
+        raise AppError(
+            status_code=503,
+            message=(
+                "Interview database schema is not ready. "
+                "Run backend migrations (alembic upgrade head) and redeploy."
+            ),
+            details={"reason": str(type(exc).__name__)},
+        ) from exc
 
 
 @router.get("/interview-result", response_model=InterviewResultResponse)
