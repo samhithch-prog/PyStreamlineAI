@@ -72,6 +72,24 @@ function getErrorMessage(error: unknown) {
   return "Unexpected error occurred.";
 }
 
+function clearClientAccessToken() {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.localStorage.removeItem("zoswi_access_token");
+}
+
+function isAuthFailureMessage(message: string) {
+  const lowered = String(message || "").toLowerCase();
+  return (
+    lowered.includes("missing bearer token") ||
+    lowered.includes("invalid token") ||
+    lowered.includes("token expired") ||
+    lowered.includes("unauthorized") ||
+    lowered.includes("401")
+  );
+}
+
 function normalizeInterviewType(rawValue: string | null | undefined): InterviewType {
   const cleaned = String(rawValue || "")
     .trim()
@@ -122,25 +140,27 @@ export function InterviewClient() {
     let isMounted = true;
     const resolveAccess = async () => {
       let token = getClientAccessToken();
-      if (!token) {
-        const params = new URLSearchParams(window.location.search);
-        const launchToken = String(params.get("launch_token") || params.get("amp;launch_token") || "").trim();
-        if (launchToken) {
-          try {
-            const launchResponse = await exchangeStreamlitLaunchToken(launchToken);
-            const accessToken = String(launchResponse.access_token || "").trim();
-            if (accessToken) {
-              window.localStorage.setItem("zoswi_access_token", accessToken);
-              token = accessToken;
-              params.delete("launch_token");
-              params.delete("amp;launch_token");
-              const nextQuery = params.toString();
-              const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
-              window.history.replaceState({}, "", nextUrl);
-            }
-          } catch {
+      const params = new URLSearchParams(window.location.search);
+      const launchToken = String(params.get("launch_token") || params.get("amp;launch_token") || "").trim();
+      if (launchToken) {
+        try {
+          const launchResponse = await exchangeStreamlitLaunchToken(launchToken);
+          const accessToken = String(launchResponse.access_token || "").trim();
+          if (accessToken) {
+            window.localStorage.setItem("zoswi_access_token", accessToken);
+            token = accessToken;
+          } else {
+            clearClientAccessToken();
             token = "";
           }
+          params.delete("launch_token");
+          params.delete("amp;launch_token");
+          const nextQuery = params.toString();
+          const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+          window.history.replaceState({}, "", nextUrl);
+        } catch {
+          clearClientAccessToken();
+          token = "";
         }
       }
       if (!isMounted) {
@@ -694,7 +714,17 @@ export function InterviewClient() {
         updateActiveSpeaker("none");
       };
     } catch (error) {
-      setErrorMessage(getErrorMessage(error));
+      const message = getErrorMessage(error);
+      if (isAuthFailureMessage(message)) {
+        clearClientAccessToken();
+        setHasAccessToken(false);
+        setStatusMessage("Session expired. Sign in on ZoSwi dashboard and relaunch interview.");
+        setErrorMessage("Login required. Please relaunch the interview from ZoSwi.");
+        updateConnectionStatus("idle");
+        setIsLive(false);
+        return;
+      }
+      setErrorMessage(message);
       updateConnectionStatus("closed");
       setIsLive(false);
     }
