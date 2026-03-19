@@ -17,6 +17,7 @@ export default function HomePage({ searchParams }: HomePageProps) {
   const role = getFirstQueryValue(searchParams?.role);
   const type = getFirstQueryValue(searchParams?.type);
   const source = getFirstQueryValue(searchParams?.source);
+  const launchToken = getFirstQueryValue(searchParams?.launch_token);
 
   if (candidate) {
     query.set("candidate", candidate);
@@ -29,6 +30,9 @@ export default function HomePage({ searchParams }: HomePageProps) {
   }
   if (source) {
     query.set("source", source);
+  }
+  if (launchToken) {
+    query.set("launch_token", launchToken);
   }
   const interviewHref = query.size > 0 ? `/interview?${query.toString()}` : "/interview";
 
