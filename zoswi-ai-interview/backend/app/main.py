@@ -26,11 +26,27 @@ if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
+def _get_allowed_origins() -> list[str]:
+    raw_value = str(settings.frontend_origin or "").strip()
+    if not raw_value:
+        return ["http://localhost:3000"]
+    origins: list[str] = []
+    for origin in raw_value.split(","):
+        cleaned = str(origin or "").strip().rstrip("/")
+        if cleaned:
+            origins.append(cleaned)
+    return origins or ["http://localhost:3000"]
+
+
+ALLOWED_ORIGINS = _get_allowed_origins()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     configure_logging()
     logger = logging.getLogger(__name__)
     logger.info("Starting %s in %s mode", settings.app_name, settings.app_env)
+    logger.info("Configured CORS origins: %s", ", ".join(ALLOWED_ORIGINS))
     configure_observability(app, engine)
     await init_db()
     yield
@@ -47,7 +63,7 @@ app.add_exception_handler(AppError, app_error_handler)
 app.add_middleware(HttpRateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
