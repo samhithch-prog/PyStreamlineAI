@@ -1337,6 +1337,13 @@ export function InterviewClient() {
     finalResult?.turn_count ?? transcripts.filter((line) => line.speaker === "candidate").length;
   const summaryMaxTurns = finalResult?.max_turns ?? maxTurns;
   const summaryOverall = finalResult?.evaluation_summary?.overall_rating;
+  const quotaExhaustedMessage = (() => {
+    const message = String(errorMessage || "").trim();
+    if (!message) {
+      return "";
+    }
+    return message.toLowerCase().includes("ai interview chances exhausted") ? message : "";
+  })();
 
   async function copySessionId() {
     if (!sessionId) {
@@ -1375,7 +1382,31 @@ export function InterviewClient() {
     <div className="relative overflow-hidden rounded-[34px] border border-white/20 bg-[linear-gradient(165deg,rgba(16,41,67,0.8),rgba(24,57,88,0.72))] p-5 shadow-[0_24px_70px_rgba(9,24,46,0.35)] sm:p-8">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_14%_12%,rgba(125,211,252,0.24),transparent_34%),radial-gradient(circle_at_90%_2%,rgba(52,211,153,0.2),transparent_38%)]" />
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-100/65 to-transparent" />
+      {quotaExhaustedMessage ? (
+        <section className="relative z-20 mb-4 rounded-2xl border border-amber-300/45 bg-amber-500/14 px-4 py-3 text-sm text-amber-100 shadow-[0_10px_28px_rgba(180,83,9,0.25)]">
+          {quotaExhaustedMessage}
+        </section>
+      ) : null}
       <header className="relative">
+        <div className="absolute right-0 top-0 z-20">
+          <div className="group relative inline-flex">
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-cyan-100/40 bg-cyan-400/15 text-cyan-100 transition hover:bg-cyan-400/25 focus:outline-none focus:ring-2 focus:ring-cyan-200/70"
+              aria-label="Interview benefits information"
+              title="Interview benefits information"
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 10v6" />
+                <path d="M12 7h.01" />
+              </svg>
+            </button>
+            <div className="pointer-events-none absolute right-0 top-10 w-[300px] rounded-xl border border-cyan-200/35 bg-slate-950/95 p-3 text-xs leading-relaxed text-cyan-50 opacity-0 shadow-[0_14px_30px_rgba(3,10,24,0.6)] transition group-hover:opacity-100 group-focus-within:opacity-100">
+              Share your resume, complete your interview, and ZoSwi will organize recruiter-ready findings so your profile gets noticed faster with aligned opportunities.
+            </div>
+          </div>
+        </div>
         <p className="text-xs font-semibold uppercase tracking-[0.3em] text-cyan-200/90">ZoSwi Interview Suite</p>
         <div className="mt-2 flex flex-wrap items-center gap-3">
           <h1 className="font-[var(--font-display)] text-3xl font-semibold tracking-tight text-slate-50 sm:text-4xl">
@@ -1594,7 +1625,7 @@ export function InterviewClient() {
 
       <video ref={faceDetectionVideoRef} className="hidden" autoPlay muted playsInline aria-hidden="true" />
 
-      {errorMessage ? (
+      {errorMessage && !quotaExhaustedMessage ? (
         <section className="relative mt-6 rounded-2xl border border-rose-300/35 bg-rose-500/12 p-4 text-sm text-rose-100">
           {errorMessage}
         </section>
