@@ -142,6 +142,63 @@ def decode_ws_token(token: str, expected_session_id: uuid.UUID | None = None) ->
     )
 
 
+def decode_streamlit_launch_token(token: str) -> dict[str, Any]:
+    launch_secret = str(settings.streamlit_launch_secret or "").strip()
+    if not launch_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Streamlit launch auth is not configured.",
+        )
+    try:
+        claims = jwt.decode(
+            token,
+            launch_secret,
+            algorithms=[settings.jwt_algorithm],
+            audience=settings.streamlit_launch_audience,
+            issuer=settings.streamlit_launch_issuer,
+            options={"require": ["exp", "iat", "sub", "iss", "aud", "jti"]},
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Launch token expired.") from exc
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid launch token.") from exc
+    token_type = str(claims.get("typ", "")).strip().lower()
+    if token_type != "streamlit_launch":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid launch token type.")
+    return claims
+
+
+def mint_access_token(
+    *,
+    user_id: str,
+    role: UserRole,
+    org_id: str | None = None,
+    email: str | None = None,
+    ttl_seconds: int | None = None,
+) -> tuple[str, int]:
+    cleaned_user_id = str(user_id or "").strip()
+    if not cleaned_user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing user id.")
+    expires_in = max(60, int(ttl_seconds or settings.access_token_ttl_seconds))
+    now = _now_utc()
+    payload: dict[str, Any] = {
+        "sub": cleaned_user_id,
+        "role": role.value,
+        "org_id": str(org_id or "").strip() or None,
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(seconds=expires_in)).timestamp()),
+        "typ": "access",
+        "jti": secrets.token_hex(16),
+    }
+    cleaned_email = str(email or "").strip().lower()
+    if cleaned_email:
+        payload["email"] = cleaned_email
+    encoded = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+    return encoded, expires_in
+
+
 def mint_ws_token(access_ctx: AuthContext, session_id: uuid.UUID, ttl_seconds: int | None = None) -> tuple[str, int]:
     expires_in = max(1, int(ttl_seconds or settings.ws_token_ttl_seconds))
     now = _now_utc()

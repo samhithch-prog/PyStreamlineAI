@@ -142,13 +142,20 @@ def render_live_interview_view(user: dict[str, Any]) -> None:
             )
 
     requirement_type = normalize_interview_requirement_type(requirement_type)
-    launch_url = build_zoswi_live_interview_launch_url(candidate_name, target_role, requirement_type)
+    launch_url = build_zoswi_live_interview_launch_url(candidate_name, target_role, requirement_type, user=user)
     base_url = get_zoswi_live_interview_base_url()
+    launch_secret_ready = bool(str(get_interview_launch_secret() or "").strip())
 
     if not base_url:
         st.error(
             "Interview app URL is not configured. Set ZOSWI_INTERVIEW_APP_URL in env or [interview].app_url in "
             "Streamlit secrets."
+        )
+        return
+
+    if not launch_secret_ready:
+        st.error(
+            "Secure interview launch is not configured. Set STREAMLIT_LAUNCH_SECRET (same value) in Streamlit and Render."
         )
         return
 
@@ -171,11 +178,9 @@ def render_live_interview_view(user: dict[str, Any]) -> None:
         )
 
     st.markdown(
-        f'<a class="live-intv-link" href="{safe_launch_url}" target="_blank" rel="noopener noreferrer">'
-        "Launch Live Interview</a>",
+        '<div class="live-intv-url">Secure one-time launch link generated from this signed-in session.</div>',
         unsafe_allow_html=True,
     )
-    st.markdown(f'<div class="live-intv-url">{safe_launch_url}</div>', unsafe_allow_html=True)
 
     embed_inside = st.toggle("Embed interview inside Streamlit (beta)", key="live_interview_embed")
     if embed_inside:

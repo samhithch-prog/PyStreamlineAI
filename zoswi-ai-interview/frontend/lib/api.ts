@@ -1,4 +1,4 @@
-import type { InterviewResultResponse, StartInterviewResponse, WebSocketTokenResponse } from "./types";
+import type { AccessTokenResponse, InterviewResultResponse, StartInterviewResponse, WebSocketTokenResponse } from "./types";
 
 const PERSONAL_EMAIL_DOMAINS = new Set([
   "gmail.com",
@@ -173,6 +173,14 @@ export function createWebSocketToken(sessionId: string, accessToken?: string) {
     method: "POST",
     headers: { "Content-Type": "application/json", ...buildAuthHeaders(accessToken) },
     body: JSON.stringify({ session_id: sessionId })
+  });
+}
+
+export function exchangeStreamlitLaunchToken(launchToken: string) {
+  return request<AccessTokenResponse>("/auth/streamlit-launch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ launch_token: launchToken })
   });
 }
 

@@ -39,6 +39,11 @@ from src.ui.auth_view import render_password_policy_checklist
 from src.ui.styles import render_app_styles as render_ui_styles
 
 try:
+    import jwt as pyjwt
+except Exception:
+    pyjwt = None
+
+try:
     import psycopg
 except Exception:
     psycopg = None
@@ -580,6 +585,125 @@ def normalize_interview_requirement_type(raw_value: str) -> str:
     return mapping.get(cleaned, "mixed")
 
 
+def normalize_interview_auth_role(raw_value: str) -> str:
+    cleaned = str(raw_value or "").strip().lower()
+    if cleaned in {"admin", "administrator"}:
+        return "admin"
+    if cleaned in {"recruiter", "hiring_manager", "hiring manager"}:
+        return "recruiter"
+    return "candidate"
+
+
+def get_interview_launch_secret() -> str:
+    value = get_config_value(
+        "STREAMLIT_LAUNCH_SECRET",
+        "interview",
+        "launch_secret",
+        "",
+    )
+    if value:
+        return value
+    return get_config_value(
+        "ZOSWI_INTERVIEW_LAUNCH_SECRET",
+        "interview",
+        "launch_secret",
+        "",
+    )
+
+
+def get_interview_launch_issuer() -> str:
+    value = get_config_value(
+        "STREAMLIT_LAUNCH_ISSUER",
+        "interview",
+        "launch_issuer",
+        "",
+    ).strip()
+    if not value:
+        value = get_config_value(
+            "ZOSWI_INTERVIEW_LAUNCH_ISSUER",
+            "interview",
+            "launch_issuer",
+            "zoswi-streamlit",
+        )
+    return (value or "zoswi-streamlit").strip()
+
+
+def get_interview_launch_audience() -> str:
+    value = get_config_value(
+        "STREAMLIT_LAUNCH_AUDIENCE",
+        "interview",
+        "launch_audience",
+        "",
+    ).strip()
+    if not value:
+        value = get_config_value(
+            "ZOSWI_INTERVIEW_LAUNCH_AUDIENCE",
+            "interview",
+            "launch_audience",
+            "zoswi-interview-launch",
+        )
+    return (value or "zoswi-interview-launch").strip()
+
+
+def get_interview_jwt_algorithm() -> str:
+    return (get_config_value("JWT_ALGORITHM", "interview", "jwt_algorithm", "HS256") or "HS256").strip()
+
+
+def get_interview_launch_ttl_seconds() -> int:
+    configured = get_config_value(
+        "STREAMLIT_LAUNCH_TOKEN_TTL_SECONDS",
+        "interview",
+        "launch_token_ttl_seconds",
+        "",
+    ).strip()
+    if not configured:
+        configured = get_config_value(
+            "ZOSWI_INTERVIEW_LAUNCH_TOKEN_TTL_SECONDS",
+            "interview",
+            "launch_token_ttl_seconds",
+            "60",
+        ).strip()
+    return parse_int(
+        configured,
+        60,
+        minimum=15,
+        maximum=300,
+    )
+
+
+def build_streamlit_interview_launch_token(user: dict[str, Any]) -> str:
+    if pyjwt is None:
+        return ""
+    launch_secret = get_interview_launch_secret()
+    if not launch_secret:
+        return ""
+    user_id = str(user.get("id", "")).strip()
+    user_email = str(user.get("email", "")).strip().lower()
+    subject = user_id or user_email
+    if not subject:
+        return ""
+    now = datetime.now(timezone.utc)
+    exp = now + timedelta(seconds=get_interview_launch_ttl_seconds())
+    payload = {
+        "sub": subject,
+        "email": user_email,
+        "role": normalize_interview_auth_role(str(user.get("role", "")).strip()),
+        "org_id": str(user.get("org_id", "")).strip() or None,
+        "iss": get_interview_launch_issuer(),
+        "aud": get_interview_launch_audience(),
+        "iat": int(now.timestamp()),
+        "exp": int(exp.timestamp()),
+        "typ": "streamlit_launch",
+        "jti": secrets.token_hex(16),
+        "source": "streamlit",
+    }
+    try:
+        encoded = pyjwt.encode(payload, launch_secret, algorithm=get_interview_jwt_algorithm())
+    except Exception:
+        return ""
+    return str(encoded or "").strip()
+
+
 def get_zoswi_live_interview_base_url() -> str:
     configured = get_config_value(
         "ZOSWI_INTERVIEW_APP_URL",
@@ -609,7 +733,12 @@ def get_zoswi_live_interview_base_url() -> str:
     return base
 
 
-def build_zoswi_live_interview_launch_url(candidate_name: str, role: str, requirement_type: str) -> str:
+def build_zoswi_live_interview_launch_url(
+    candidate_name: str,
+    role: str,
+    requirement_type: str,
+    user: dict[str, Any] | None = None,
+) -> str:
     base_url = get_zoswi_live_interview_base_url()
     if not base_url:
         return ""
@@ -618,14 +747,16 @@ def build_zoswi_live_interview_launch_url(candidate_name: str, role: str, requir
     if not cleaned_name or not cleaned_role:
         return ""
     normalized_type = normalize_interview_requirement_type(requirement_type)
-    query = urlencode(
-        {
-            "candidate": cleaned_name,
-            "role": cleaned_role,
-            "type": normalized_type,
-            "source": "streamlit",
-        }
-    )
+    query_params = {
+        "candidate": cleaned_name,
+        "role": cleaned_role,
+        "type": normalized_type,
+        "source": "streamlit",
+    }
+    launch_token = build_streamlit_interview_launch_token(user or {})
+    if launch_token:
+        query_params["launch_token"] = launch_token
+    query = urlencode(query_params)
     joiner = "&" if "?" in base_url else "?"
     return f"{base_url}{joiner}{query}"
 

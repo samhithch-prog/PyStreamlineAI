@@ -7,7 +7,7 @@ from app.schemas.interview import (
     StartInterviewResponse,
     TranscriptItem,
 )
-from app.schemas.auth import WebSocketTokenRequest, WebSocketTokenResponse
+from app.schemas.auth import AccessTokenResponse, StreamlitLaunchTokenRequest, WebSocketTokenRequest, WebSocketTokenResponse
 from app.schemas.recruiter import (
     RecruiterCandidateItem,
     RecruiterInterviewItem,
@@ -25,6 +25,8 @@ __all__ = [
     "AIQuestionItem",
     "CandidateResponseItem",
     "EvaluationSignalsPayload",
+    "StreamlitLaunchTokenRequest",
+    "AccessTokenResponse",
     "WebSocketTokenRequest",
     "WebSocketTokenResponse",
     "RecruiterCandidateItem",

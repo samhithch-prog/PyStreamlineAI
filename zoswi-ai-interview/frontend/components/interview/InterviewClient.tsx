@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   createWebSocketToken,
+  exchangeStreamlitLaunchToken,
   getClientAccessToken,
   getInterviewResult,
   getInterviewWebSocketUrl,
@@ -118,14 +119,44 @@ export function InterviewClient() {
   const [finalResult, setFinalResult] = useState<InterviewResultResponse | null>(null);
 
   useEffect(() => {
-    const token = getClientAccessToken();
-    const authenticated = token.length > 0;
-    setHasAccessToken(authenticated);
-    setAuthChecked(true);
-    if (!authenticated) {
-      setStatusMessage("Access restricted. Please sign in through ZoSwi and relaunch the interview.");
-      setErrorMessage("Login required. This interview room is available only for authenticated users.");
-    }
+    let isMounted = true;
+    const resolveAccess = async () => {
+      let token = getClientAccessToken();
+      if (!token) {
+        const params = new URLSearchParams(window.location.search);
+        const launchToken = String(params.get("launch_token") || "").trim();
+        if (launchToken) {
+          try {
+            const launchResponse = await exchangeStreamlitLaunchToken(launchToken);
+            const accessToken = String(launchResponse.access_token || "").trim();
+            if (accessToken) {
+              window.localStorage.setItem("zoswi_access_token", accessToken);
+              token = accessToken;
+              params.delete("launch_token");
+              const nextQuery = params.toString();
+              const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+              window.history.replaceState({}, "", nextUrl);
+            }
+          } catch {
+            token = "";
+          }
+        }
+      }
+      if (!isMounted) {
+        return;
+      }
+      const authenticated = token.length > 0;
+      setHasAccessToken(authenticated);
+      setAuthChecked(true);
+      if (!authenticated) {
+        setStatusMessage("Access restricted. Open interview only from your ZoSwi dashboard.");
+        setErrorMessage("Login required. This interview room is available only for authenticated users.");
+      }
+    };
+    void resolveAccess();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   useEffect(() => {

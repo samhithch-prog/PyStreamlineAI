@@ -60,3 +60,9 @@ export type WebSocketTokenResponse = {
   expires_in: number;
   session_id: string;
 };
+
+export type AccessTokenResponse = {
+  access_token: string;
+  token_type: "Bearer";
+  expires_in: number;
+};

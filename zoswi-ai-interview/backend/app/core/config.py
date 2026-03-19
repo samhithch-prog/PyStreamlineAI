@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_issuer: str = "zoswi-auth"
     jwt_audience: str = "zoswi-platform"
+    access_token_ttl_seconds: int = 3600
+    streamlit_launch_secret: str = ""
+    streamlit_launch_issuer: str = "zoswi-streamlit"
+    streamlit_launch_audience: str = "zoswi-interview-launch"
     ws_token_ttl_seconds: int = 60
 
     openai_api_key: str = ""
