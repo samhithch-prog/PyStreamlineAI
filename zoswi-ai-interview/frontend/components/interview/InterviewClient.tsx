@@ -27,6 +27,7 @@ type ConnectionStatus =
   | "closed";
 
 type InterviewType = "mixed" | "technical" | "behavioral";
+const AUTH_RESOLVE_TIMEOUT_MS = 12000;
 
 function getRecorderMimeCandidates() {
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
@@ -139,39 +140,57 @@ export function InterviewClient() {
   useEffect(() => {
     let isMounted = true;
     const resolveAccess = async () => {
-      let token = getClientAccessToken();
-      const params = new URLSearchParams(window.location.search);
-      const launchToken = String(params.get("launch_token") || params.get("amp;launch_token") || "").trim();
-      if (launchToken) {
-        try {
-          const launchResponse = await exchangeStreamlitLaunchToken(launchToken);
-          const accessToken = String(launchResponse.access_token || "").trim();
-          if (accessToken) {
-            window.localStorage.setItem("zoswi_access_token", accessToken);
-            token = accessToken;
-          } else {
+      let token = "";
+      try {
+        token = getClientAccessToken();
+      } catch {
+        clearClientAccessToken();
+        token = "";
+      }
+
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const launchToken = String(params.get("launch_token") || params.get("amp;launch_token") || "").trim();
+        if (launchToken) {
+          try {
+            const launchResponse = (await Promise.race([
+              exchangeStreamlitLaunchToken(launchToken),
+              new Promise<never>((_, reject) => {
+                setTimeout(() => reject(new Error("Launch auth check timed out.")), AUTH_RESOLVE_TIMEOUT_MS);
+              })
+            ])) as Awaited<ReturnType<typeof exchangeStreamlitLaunchToken>>;
+            const accessToken = String(launchResponse.access_token || "").trim();
+            if (accessToken) {
+              window.localStorage.setItem("zoswi_access_token", accessToken);
+              token = accessToken;
+            } else {
+              clearClientAccessToken();
+              token = "";
+            }
+            params.delete("launch_token");
+            params.delete("amp;launch_token");
+            const nextQuery = params.toString();
+            const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
+            window.history.replaceState({}, "", nextUrl);
+          } catch {
             clearClientAccessToken();
             token = "";
           }
-          params.delete("launch_token");
-          params.delete("amp;launch_token");
-          const nextQuery = params.toString();
-          const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
-          window.history.replaceState({}, "", nextUrl);
-        } catch {
-          clearClientAccessToken();
-          token = "";
         }
-      }
-      if (!isMounted) {
-        return;
-      }
-      const authenticated = token.length > 0;
-      setHasAccessToken(authenticated);
-      setAuthChecked(true);
-      if (!authenticated) {
-        setStatusMessage("Access restricted. Open interview only from your ZoSwi dashboard.");
-        setErrorMessage("Login required. This interview room is available only for authenticated users.");
+      } catch {
+        clearClientAccessToken();
+        token = "";
+      } finally {
+        if (!isMounted) {
+          return;
+        }
+        const authenticated = token.length > 0;
+        setHasAccessToken(authenticated);
+        setAuthChecked(true);
+        if (!authenticated) {
+          setStatusMessage("Access restricted. Open interview only from your ZoSwi dashboard.");
+          setErrorMessage("Login required. This interview room is available only for authenticated users.");
+        }
       }
     };
     void resolveAccess();
