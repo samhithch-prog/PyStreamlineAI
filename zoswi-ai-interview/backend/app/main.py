@@ -7,6 +7,7 @@ from time import perf_counter
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.interview import router as interview_router
@@ -39,6 +40,38 @@ def _get_allowed_origins() -> list[str]:
 
 
 ALLOWED_ORIGINS = _get_allowed_origins()
+
+
+def _normalize_origin(origin: str) -> str:
+    return str(origin or "").strip().rstrip("/")
+
+
+def _resolve_allowed_request_origin(request: Request) -> str:
+    origin = _normalize_origin(request.headers.get("origin", ""))
+    if not origin:
+        return ""
+    return origin if origin in ALLOWED_ORIGINS else ""
+
+
+def _append_vary_origin(existing: str) -> str:
+    cleaned = str(existing or "").strip()
+    if not cleaned:
+        return "Origin"
+    parts = [item.strip() for item in cleaned.split(",") if item.strip()]
+    if any(item.lower() == "origin" for item in parts):
+        return cleaned
+    return f"{cleaned}, Origin"
+
+
+def _attach_cors_headers(request: Request, response) -> None:
+    if str(response.headers.get("access-control-allow-origin", "")).strip():
+        return
+    allowed_origin = _resolve_allowed_request_origin(request)
+    if not allowed_origin:
+        return
+    response.headers["access-control-allow-origin"] = allowed_origin
+    response.headers["access-control-allow-credentials"] = "true"
+    response.headers["vary"] = _append_vary_origin(response.headers.get("vary", ""))
 
 
 @asynccontextmanager
@@ -79,7 +112,25 @@ async def request_logging_middleware(request: Request, call_next):
     request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
     request.state.request_id = request_id
     started = perf_counter()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        request_logger.exception(
+            "Unhandled request error.",
+            extra={
+                "request_id": request_id,
+                "session_id": str(request.query_params.get("session_id", "") or ""),
+                "user_id": str(getattr(request.state, "user_id", "") or ""),
+            },
+        )
+        response = JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error.",
+                "request_id": request_id,
+            },
+        )
+    _attach_cors_headers(request, response)
     response.headers["x-request-id"] = request_id
     duration_ms = round((perf_counter() - started) * 1000, 2)
     request_logger.info(
