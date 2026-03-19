@@ -346,26 +346,30 @@ class AIService:
             primary_key = settings.openai_api_setting_key
             legacy_spaced_key = primary_key.replace("_", " ")
             fallback_openai_key = "OPENAI_API_KEY"
-            result = await db.execute(
-                text(
-                    """
-                    SELECT setting_value
-                    FROM app_settings
-                    WHERE setting_key IN (:primary_key, :legacy_spaced_key, :fallback_openai_key)
-                    ORDER BY CASE
-                      WHEN setting_key = :primary_key THEN 0
-                      WHEN setting_key = :legacy_spaced_key THEN 1
-                      ELSE 2
-                    END
-                    LIMIT 1
-                    """
-                ),
-                {
-                    "primary_key": primary_key,
-                    "legacy_spaced_key": legacy_spaced_key,
-                    "fallback_openai_key": fallback_openai_key,
-                },
-            )
+            # Isolate app_settings lookup failures from the caller transaction.
+            # Without this savepoint, a missing table/permission error can poison
+            # the outer interview transaction and trigger "current transaction is aborted".
+            async with db.begin_nested():
+                result = await db.execute(
+                    text(
+                        """
+                        SELECT setting_value
+                        FROM app_settings
+                        WHERE setting_key IN (:primary_key, :legacy_spaced_key, :fallback_openai_key)
+                        ORDER BY CASE
+                          WHEN setting_key = :primary_key THEN 0
+                          WHEN setting_key = :legacy_spaced_key THEN 1
+                          ELSE 2
+                        END
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "primary_key": primary_key,
+                        "legacy_spaced_key": legacy_spaced_key,
+                        "fallback_openai_key": fallback_openai_key,
+                    },
+                )
             value = str(result.scalar_one_or_none() or "").strip()
             self._cached_db_key = value
             self._cached_db_key_at = now
