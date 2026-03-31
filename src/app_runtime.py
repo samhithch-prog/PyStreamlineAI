@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
+from importlib import import_module
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -25,7 +26,6 @@ from zoneinfo import ZoneInfo
 
 import pdfplumber
 import streamlit as st
-from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_openai import ChatOpenAI as ZoSwiAIChat, OpenAIEmbeddings as ZoSwiAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -7835,15 +7835,27 @@ def fallback_analysis(resume_text: str, job_description: str) -> dict[str, Any]:
     }
 
 
+@lru_cache(maxsize=1)
+def get_faiss_vectorstore_class() -> Any:
+    try:
+        vectorstore_module = import_module("langchain_community.vectorstores")
+        return getattr(vectorstore_module, "FAISS", None)
+    except Exception:
+        return None
+
+
 @lru_cache(maxsize=12)
 def build_resume_vectorstore_cached(resume_text: str, api_key: str) -> tuple[Any, int]:
+    faiss_vectorstore_class = get_faiss_vectorstore_class()
+    if faiss_vectorstore_class is None:
+        raise RuntimeError("FAISS vectorstore backend is unavailable.")
     splitter = RecursiveCharacterTextSplitter(chunk_size=900, chunk_overlap=120)
     chunks = splitter.split_text(str(resume_text or ""))
     documents = [Document(page_content=chunk) for chunk in chunks if chunk.strip()]
     if not documents:
         return None, 0
     embeddings = ZoSwiAIEmbeddings(model="text-embedding-3-small", api_key=api_key)
-    vectorstore = FAISS.from_documents(documents, embeddings)
+    vectorstore = faiss_vectorstore_class.from_documents(documents, embeddings)
     return vectorstore, len(documents)
 
 
