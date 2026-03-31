@@ -27,7 +27,7 @@ type ConnectionStatus =
   | "closed";
 
 type InterviewType = "mixed" | "technical" | "behavioral";
-const AUTH_RESOLVE_TIMEOUT_MS = 12000;
+const AUTH_RESOLVE_TIMEOUT_MS = 45000;
 
 function getRecorderMimeCandidates() {
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
@@ -141,6 +141,7 @@ export function InterviewClient() {
     let isMounted = true;
     const resolveAccess = async () => {
       let token = "";
+      let launchAuthFailureMessage = "";
       try {
         token = getClientAccessToken();
       } catch {
@@ -163,7 +164,7 @@ export function InterviewClient() {
             if (accessToken) {
               window.localStorage.setItem("zoswi_access_token", accessToken);
               token = accessToken;
-            } else {
+            } else if (!token) {
               clearClientAccessToken();
               token = "";
             }
@@ -172,14 +173,19 @@ export function InterviewClient() {
             const nextQuery = params.toString();
             const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}`;
             window.history.replaceState({}, "", nextUrl);
-          } catch {
-            clearClientAccessToken();
-            token = "";
+          } catch (error) {
+            launchAuthFailureMessage = getErrorMessage(error);
+            if (!token) {
+              clearClientAccessToken();
+              token = "";
+            }
           }
         }
       } catch {
-        clearClientAccessToken();
-        token = "";
+        if (!token) {
+          clearClientAccessToken();
+          token = "";
+        }
       } finally {
         if (!isMounted) {
           return;
@@ -188,8 +194,16 @@ export function InterviewClient() {
         setHasAccessToken(authenticated);
         setAuthChecked(true);
         if (!authenticated) {
-          setStatusMessage("Access restricted. Open interview only from your ZoSwi dashboard.");
-          setErrorMessage("Login required. This interview room is available only for authenticated users.");
+          const launchFailure = String(launchAuthFailureMessage || "").trim();
+          if (launchFailure) {
+            setStatusMessage(`Access restricted. ${launchFailure}`);
+            setErrorMessage(`Login required. ${launchFailure}`);
+          } else {
+            setStatusMessage("Access restricted. Open interview only from your ZoSwi dashboard.");
+            setErrorMessage("Login required. This interview room is available only for authenticated users.");
+          }
+        } else {
+          setErrorMessage(null);
         }
       }
     };
@@ -1374,6 +1388,7 @@ export function InterviewClient() {
         <p className="mt-3 text-sm leading-relaxed text-rose-100/95">
           This interview room is restricted. Sign in on ZoSwi first, then relaunch from the dashboard.
         </p>
+        {errorMessage ? <p className="mt-2 text-xs leading-relaxed text-rose-100/90">{errorMessage}</p> : null}
       </div>
     );
   }
