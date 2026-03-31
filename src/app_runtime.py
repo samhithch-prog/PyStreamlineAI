@@ -279,6 +279,7 @@ ZOSWI_FEATURE_LIVE_WORKSPACE_ENABLED_KEY = "ZOSWI_FEATURE_LIVE_WORKSPACE_ENABLED
 ZOSWI_FEATURE_IMMIGRATION_UPDATES_ENABLED_KEY = "ZOSWI_FEATURE_IMMIGRATION_UPDATES_ENABLED"
 ZOSWI_FEATURE_AI_CODING_ROOM_ENABLED_KEY = "ZOSWI_FEATURE_AI_CODING_ROOM_ENABLED"
 ZOSWI_FEATURE_LIVE_AI_INTERVIEW_ENABLED_KEY = "ZOSWI_FEATURE_LIVE_AI_INTERVIEW_ENABLED"
+ZOSWI_FEATURE_INSTANT_BUILDER_AUTH_LINK_ENABLED_KEY = "ZOSWI_FEATURE_INSTANT_BUILDER_AUTH_LINK_ENABLED"
 ZOSWI_DASHBOARD_FEATURE_FLAGS: dict[str, tuple[str, str]] = {
     "careers": (ZOSWI_FEATURE_CAREERS_ENABLED_KEY, "careers_enabled"),
     "ai_workspace": (ZOSWI_FEATURE_LIVE_WORKSPACE_ENABLED_KEY, "live_workspace_enabled"),
@@ -868,6 +869,18 @@ def get_instant_builder_url() -> str:
         ZOSWI_INSTANT_BUILDER_URL_DEFAULT,
     )
     return str(configured or ZOSWI_INSTANT_BUILDER_URL_DEFAULT).strip()
+
+
+def is_instant_builder_auth_link_enabled() -> bool:
+    configured = get_config_value(
+        ZOSWI_FEATURE_INSTANT_BUILDER_AUTH_LINK_ENABLED_KEY,
+        "app",
+        "instant_builder_auth_link_enabled",
+        "",
+    )
+    if str(configured or "").strip():
+        return parse_bool(configured, default=False)
+    return not is_production_environment()
 
 
 @lru_cache(maxsize=1)
@@ -4850,6 +4863,8 @@ def build_live_immigration_updates_response(message: str) -> str:
         force_refresh_on_miss=not force_live_refresh,
     )
     answer = sanitize_zoswi_response_text(service.answer_query_from_updates(cleaned_query, updates))
+    if answer.startswith("---\nOverview:"):
+        return answer
     note_parts = [
         sanitize_zoswi_response_text(refresh_note),
         sanitize_zoswi_response_text(str(live_note or "").strip()),
@@ -11715,7 +11730,7 @@ def render_auth_screen() -> None:
     with account_col:
         st.caption("Create an account or log in to start resume-job matching.")
         builder_url = get_instant_builder_url()
-        if builder_url:
+        if builder_url and is_instant_builder_auth_link_enabled():
             with st.container(key="auth_open_builder_btn"):
                 st.link_button(
                     "Open ZoSwi Instant App Builder",

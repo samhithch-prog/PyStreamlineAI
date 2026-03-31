@@ -291,13 +291,15 @@ class ImmigrationUpdatesService:
                 "Try a specific query like H1B lottery selection notice or visa bulletin EB2."
             )
         if self.looks_like_question(question) and not has_direct_match:
-            return (
+            return self._remove_urls_from_text(
+                (
                 f'I could not find a direct live match for "{question}" in the latest source updates. '
                 "Try a more specific keyword like H1B registration, visa bulletin EB2, or STEM OPT."
+                )
             )
         h1b_live_answer = self._build_h1b_results_live_answer(question, rows)
         if h1b_live_answer:
-            return h1b_live_answer
+            return self._remove_urls_from_text(h1b_live_answer)
 
         client = self._get_ai_client()
         if client is not None:
@@ -320,28 +322,29 @@ class ImmigrationUpdatesService:
                         {
                             "role": "system",
                             "content": (
-                                "You answer immigration dashboard questions using only provided updates. "
-                                "Be factual, concise, and non-speculative. If an official date is not present, "
-                                "state that clearly. Do not provide legal advice."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": (
+                            "You answer immigration dashboard questions using only provided updates. "
+                            "Be factual, concise, and non-speculative. If an official date is not present, "
+                            "state that clearly. Do not provide legal advice. Do not include URLs or links."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
                                 f"Question: {question}\n"
                                 f"Today's date (UTC): {datetime.now(timezone.utc).date().isoformat()}\n"
                                 f"Updates JSON: {json.dumps(context_rows, ensure_ascii=True)}\n"
-                                "Answer in 2-4 sentences. Include exact dates when available and mention source names."
+                                "Answer in 2-4 sentences. Include exact dates when available and mention source names. "
+                                "Do not include any URLs."
                             ),
                         },
                     ],
                 )
                 content = self._compact_text(str(response.choices[0].message.content or ""))
                 if content:
-                    return content
+                    return self._remove_urls_from_text(content)
             except Exception:
                 pass
-        return self._heuristic_question_answer(question, rows)
+        return self._remove_urls_from_text(self._heuristic_question_answer(question, rows))
 
     def _build_h1b_results_live_answer(self, query: str, updates: list[dict[str, Any]]) -> str:
         lowered = str(query or "").strip().lower()
@@ -367,20 +370,100 @@ class ImmigrationUpdatesService:
         latest = h1b_rows[0]
         latest_title = self._compact_text(str(latest.get("title", "")).strip()) or "H1B update"
         latest_source = self._compact_text(str(latest.get("source", "")).strip()) or "USCIS"
-        latest_link = self._compact_text(str(latest.get("link", "")).strip())
         latest_date = self._format_date_label(str(latest.get("published_date", "")).strip())
-        fiscal_match = re.search(r"\bfy\s*(20\d{2})\b", latest_title.lower())
-        if fiscal_match:
-            fiscal_label = fiscal_match.group(1)
-            answer = (
-                f"Live USCIS-linked H1B update: {latest_title} ({latest_source}, {latest_date}). "
-                f"Based on this update, USCIS has posted FY {fiscal_label} selection-process status."
+        fiscal_match = re.search(r"\bfy\s*(20\d{2})\b", " ".join(str(row.get("title", "")) for row in h1b_rows).lower())
+        fiscal_label = fiscal_match.group(1) if fiscal_match else "current"
+
+        corpus = " ".join(
+            self._compact_text(f"{row.get('title', '')} {row.get('summary', '')}").lower()
+            for row in h1b_rows[:6]
+        )
+        has_selection_completed = (
+            "selection process completed" in corpus
+            or "initial registration selection process completed" in corpus
+            or "selection process completes" in corpus
+            or "initial registration selection process completes" in corpus
+            or ("selection" in corpus and ("completed" in corpus or "completes" in corpus))
+        )
+        has_registration_open_notice = (
+            "registration period opens" in corpus
+            or "initial registration period opens" in corpus
+            or ("registration" in corpus and "opens" in corpus)
+        )
+
+        if has_selection_completed:
+            overview = (
+                f"As of {latest_date}, USCIS indicates FY {fiscal_label} is in post-lottery processing: "
+                "registration is closed, lottery is completed, and selected cases are in petition filing."
             )
+            key_updates = [
+                f"USCIS update: {latest_title} ({latest_source}, {latest_date}).",
+                "Registration is closed; no new cap registrations can be submitted.",
+                "Lottery/initial selection is completed and results are visible in employer or attorney USCIS accounts.",
+                "Only selected registrations can move to petition filing during the filing window on the selection notice.",
+                "This summary is based on the latest USCIS update in the live feed.",
+            ]
+            next_step = (
+                "Contact your employer or attorney to confirm your USCIS selection status and, "
+                "if selected, file the H-1B petition before the deadline in the selection notice."
+            )
+            status_line = "Registration Closed - Lottery Completed - Results Released - Petition Filing Phase"
+        elif has_registration_open_notice:
+            overview = (
+                f"USCIS indicates FY {fiscal_label} registration is in the registration window stage "
+                "or approaching registration open."
+            )
+            key_updates = [
+                f"USCIS update: {latest_title} ({latest_source}, {latest_date}).",
+                "Registration-related instructions apply only during the registration window shown by USCIS.",
+                "Lottery results are not final until USCIS posts selection completion updates.",
+                "This summary is based on the latest USCIS update in the live feed.",
+            ]
+            next_step = (
+                "If registration is currently open, your employer should submit the H-1B electronic registration "
+                "before the USCIS deadline."
+            )
+            status_line = "Registration Open - Await Lottery Processing"
         else:
-            answer = f"Live USCIS-linked H1B update: {latest_title} ({latest_source}, {latest_date})."
-        if latest_link:
-            answer += f" Source: {latest_link}"
-        return answer
+            overview = (
+                f"USCIS has posted H-1B lifecycle updates for FY {fiscal_label}, but current stage details "
+                "are not fully explicit in the latest item."
+            )
+            key_updates = [
+                f"Latest H-1B item: {latest_title} ({latest_source}, {latest_date}).",
+                "Use employer or attorney USCIS account status as the operational source of truth for selection outcomes.",
+                "This summary is based on the latest USCIS update in the live feed.",
+            ]
+            next_step = (
+                "Check with your employer or attorney for your exact registration status and any active USCIS filing window."
+            )
+            status_line = "Registration Closed - Check Selection Status"
+
+        formatted_key_updates = "\n".join(f"- {item}" for item in key_updates if item)
+        return (
+            "---\n"
+            "Overview:\n"
+            f"{overview}\n\n"
+            "Key Updates:\n"
+            f"{formatted_key_updates}\n\n"
+            "Next Step:\n"
+            f"{next_step}\n\n"
+            "Status Line (very important):\n"
+            f"{status_line}\n"
+            "---"
+        )
+
+    @staticmethod
+    def _remove_urls_from_text(text: str) -> str:
+        cleaned = str(text or "")
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"https?://\S+", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\bwww\.\S+", "", cleaned, flags=re.IGNORECASE)
+        cleaned_lines = [re.sub(r"[ \t]+", " ", line).rstrip() for line in cleaned.splitlines()]
+        normalized = "\n".join(cleaned_lines).strip()
+        normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+        return normalized
 
     def list_recent_alerts(self, lookback_hours: int = 48, limit: int = 6) -> list[dict[str, Any]]:
         return self._repo.list_recent_alerts(lookback_hours=lookback_hours, limit=limit)
@@ -836,7 +919,7 @@ class ImmigrationUpdatesService:
             scope_line
             + "\n\nKey updates:\n"
             + "\n".join(bullets)
-            + "\n\nNext step: review source links and verify date-specific guidance before acting."
+            + "\n\nNext step: review official source updates and verify date-specific guidance before acting."
         )
 
     def _classify_item(self, title: str, raw_text: str, link: str, source: str) -> tuple[str, list[str]]:
@@ -896,7 +979,6 @@ class ImmigrationUpdatesService:
                 latest_date = self._format_date_label(str(latest.get("published_date", "")).strip())
                 latest_title = str(latest.get("title", "")).strip() or "H1B update"
                 latest_source = str(latest.get("source", "")).strip() or "source"
-                latest_link = str(latest.get("link", "")).strip()
                 if "result" in lowered or "selection" in lowered:
                     base = (
                         f"The latest H1B-related update in this dashboard is from {latest_date} "
@@ -904,22 +986,17 @@ class ImmigrationUpdatesService:
                     )
                     if "2027" in lowered:
                         base += " I do not currently see an official FY2027 selection-result date in the fetched updates."
-                    if latest_link:
-                        base += f" Source: {latest_link}"
                     return base
                 return (
                     f"Latest H1B-related update: {latest_title} ({latest_source}, {latest_date}). "
-                    f"Open the source link in the feed for full details."
+                    "Check your employer or attorney USCIS account status for exact case-level details."
                 )
 
         latest = ranked[0]
         latest_date = self._format_date_label(str(latest.get("published_date", "")).strip())
         latest_title = str(latest.get("title", "")).strip() or "Immigration update"
         latest_source = str(latest.get("source", "")).strip() or "source"
-        latest_link = str(latest.get("link", "")).strip()
         answer = f"Latest related update: {latest_title} ({latest_source}, {latest_date})."
-        if latest_link:
-            answer += f" Source: {latest_link}"
         return answer
 
     def _build_h1b_timeline_answer(self, query: str) -> str:
