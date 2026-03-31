@@ -1386,7 +1386,16 @@ export function InterviewClient() {
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-rose-100/90">Access Denied</p>
         <h2 className="mt-2 font-[var(--font-display)] text-2xl font-semibold text-white">Login Required</h2>
         <p className="mt-3 text-sm leading-relaxed text-rose-100/95">
-          This interview room is restricted. Sign in on ZoSwi first, then relaunch from the dashboard.
+          This interview room is restricted. Sign in on{" "}
+          <a
+            href="https://zoswiai.streamlit.app"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-semibold text-rose-50 underline underline-offset-2 hover:text-white"
+          >
+            ZoSwi
+          </a>{" "}
+          first, then relaunch from the dashboard.
         </p>
         {errorMessage ? <p className="mt-2 text-xs leading-relaxed text-rose-100/90">{errorMessage}</p> : null}
       </div>
