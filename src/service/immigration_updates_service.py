@@ -295,6 +295,9 @@ class ImmigrationUpdatesService:
                 f'I could not find a direct live match for "{question}" in the latest source updates. '
                 "Try a more specific keyword like H1B registration, visa bulletin EB2, or STEM OPT."
             )
+        h1b_live_answer = self._build_h1b_results_live_answer(question, rows)
+        if h1b_live_answer:
+            return h1b_live_answer
 
         client = self._get_ai_client()
         if client is not None:
@@ -339,6 +342,45 @@ class ImmigrationUpdatesService:
             except Exception:
                 pass
         return self._heuristic_question_answer(question, rows)
+
+    def _build_h1b_results_live_answer(self, query: str, updates: list[dict[str, Any]]) -> str:
+        lowered = str(query or "").strip().lower()
+        h1b_terms = ("h1b", "h-1b")
+        results_terms = ("result", "results", "selection", "selected", "lottery", "date", "when", "timeline")
+        if not any(term in lowered for term in h1b_terms):
+            return ""
+        if not any(term in lowered for term in results_terms):
+            return ""
+        ranked = sorted([row for row in updates if isinstance(row, dict)], key=self._sort_key_published_date, reverse=True)
+        if not ranked:
+            return ""
+        h1b_rows = [
+            row
+            for row in ranked
+            if str(row.get("visa_category", "")).strip() == "H1B"
+            or "h1b" in self._compact_text(
+                f"{row.get('title', '')} {row.get('summary', '')} {' '.join(str(tag) for tag in row.get('tags', []))}"
+            ).lower().replace("-", "")
+        ]
+        if not h1b_rows:
+            return ""
+        latest = h1b_rows[0]
+        latest_title = self._compact_text(str(latest.get("title", "")).strip()) or "H1B update"
+        latest_source = self._compact_text(str(latest.get("source", "")).strip()) or "USCIS"
+        latest_link = self._compact_text(str(latest.get("link", "")).strip())
+        latest_date = self._format_date_label(str(latest.get("published_date", "")).strip())
+        fiscal_match = re.search(r"\bfy\s*(20\d{2})\b", latest_title.lower())
+        if fiscal_match:
+            fiscal_label = fiscal_match.group(1)
+            answer = (
+                f"Live USCIS-linked H1B update: {latest_title} ({latest_source}, {latest_date}). "
+                f"Based on this update, USCIS has posted FY {fiscal_label} selection-process status."
+            )
+        else:
+            answer = f"Live USCIS-linked H1B update: {latest_title} ({latest_source}, {latest_date})."
+        if latest_link:
+            answer += f" Source: {latest_link}"
+        return answer
 
     def list_recent_alerts(self, lookback_hours: int = 48, limit: int = 6) -> list[dict[str, Any]]:
         return self._repo.list_recent_alerts(lookback_hours=lookback_hours, limit=limit)

@@ -86,8 +86,9 @@ def test_answer_query_from_updates_prefers_relevant_h1b_update() -> None:
 
     answer = service.answer_query_from_updates("When will H1B selection results be available?", updates)
 
-    assert "H1B-related update" in answer
+    assert "Live USCIS-linked H1B update" in answer
     assert "USCIS Alerts" in answer
+    assert "Source:" in answer
 
 
 def test_answer_query_from_updates_keeps_generic_latest_query_live() -> None:
