@@ -34,7 +34,9 @@ from src.controller.app_controller import run_app_runtime
 from src.dto.auth_dto import PasswordResetInputDTO
 from src.dto.runtime_dto import AppRuntimeHandlersDTO, PageConfigDTO
 from src.repository.auth_repository import AuthRepository
+from src.repository.immigration_repository import ImmigrationRepository
 from src.service.auth_service import AuthService, AuthServiceDependencies
+from src.service.immigration_updates_service import ImmigrationUpdatesService
 from src.ui.auth_view import render_password_policy_checklist
 from src.ui.styles import render_app_styles as render_ui_styles
 
@@ -143,6 +145,7 @@ AI_WORKSPACE_ADULT_BLOCK_MESSAGE = (
 )
 ZOSWI_LIVE_WORKSPACE_NAME = "ZoSwi Live Workspace"
 ZOSWI_INTERVIEW_APP_URL_DEFAULT = "http://127.0.0.1:3000/interview"
+ZOSWI_INSTANT_BUILDER_URL_DEFAULT = "http://127.0.0.1:3000/instant-builder"
 ZOSWI_BLOCKED_APP_NAME_PATTERN = re.compile(
     r"(?i)\b(?:"
     r"chat\s*gpt|chatgpt|claude|perplexity|"
@@ -377,6 +380,8 @@ PUBLIC_EMAIL_DOMAINS = {
     "zoho.com",
     "yandex.com",
 }
+PROJECT_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+SQLITE_FALLBACK_DB_PATH = os.path.join(PROJECT_ROOT_DIR, "users.db")
 
 
 class DBCursor:
@@ -855,6 +860,16 @@ def get_app_timezone() -> Any:
     return resolved
 
 
+def get_instant_builder_url() -> str:
+    configured = get_config_value(
+        "ZOSWI_INSTANT_BUILDER_URL",
+        "app",
+        "instant_builder_url",
+        ZOSWI_INSTANT_BUILDER_URL_DEFAULT,
+    )
+    return str(configured or ZOSWI_INSTANT_BUILDER_URL_DEFAULT).strip()
+
+
 @lru_cache(maxsize=1)
 def get_postgres_pool() -> Any:
     if PsycopgConnectionPool is None or psycopg is None:
@@ -870,21 +885,24 @@ def get_postgres_pool() -> Any:
 
 def db_connect() -> DBConnection:
     db_url = get_database_url()
-    if not db_url:
-        raise RuntimeError("DATABASE_URL is required. Configure PostgreSQL in env or Streamlit secrets.")
-    if not using_postgres():
-        raise RuntimeError("DATABASE_URL must use a PostgreSQL URL (postgresql:// or postgres://).")
-    if psycopg is None:
-        raise RuntimeError("PostgreSQL selected but psycopg is not installed.")
-    pool = get_postgres_pool()
-    if pool is not None:
-        try:
-            raw_conn = pool.getconn()
-            return DBConnection(raw_conn, "postgres", release_callback=pool.putconn)
-        except Exception:
-            pass
-    raw_conn = psycopg.connect(db_url)
-    return DBConnection(raw_conn, "postgres")
+    if db_url:
+        if not using_postgres():
+            raise RuntimeError("DATABASE_URL must use a PostgreSQL URL (postgresql:// or postgres://).")
+        if psycopg is None:
+            raise RuntimeError("PostgreSQL selected but psycopg is not installed.")
+        pool = get_postgres_pool()
+        if pool is not None:
+            try:
+                raw_conn = pool.getconn()
+                return DBConnection(raw_conn, "postgres", release_callback=pool.putconn)
+            except Exception:
+                pass
+        raw_conn = psycopg.connect(db_url)
+        return DBConnection(raw_conn, "postgres")
+
+    sqlite_path = str(os.getenv("SQLITE_DB_PATH", "")).strip() or SQLITE_FALLBACK_DB_PATH
+    raw_conn = sqlite3.connect(sqlite_path)
+    return DBConnection(raw_conn, "sqlite")
 
 
 def get_table_columns(conn: DBConnection, table_name: str) -> set[str]:
@@ -913,20 +931,52 @@ def cleanup_expired_signup_verification_requests(max_rows: int = 200) -> None:
     limit_rows = max(1, int(max_rows or 1))
     conn = db_connect()
     try:
-        conn.execute(
-            """
-            DELETE FROM signup_verification_requests
-            WHERE id IN (
+        if conn.backend == "postgres":
+            conn.execute(
+                """
+                DELETE FROM signup_verification_requests
+                WHERE id IN (
+                    SELECT id
+                    FROM signup_verification_requests
+                    WHERE expires_at <= ?
+                    ORDER BY id
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT ?
+                )
+                """,
+                (now_iso, limit_rows),
+            )
+        else:
+            rows = conn.execute(
+                """
                 SELECT id
                 FROM signup_verification_requests
                 WHERE expires_at <= ?
                 ORDER BY id
-                FOR UPDATE SKIP LOCKED
                 LIMIT ?
-            )
-            """,
-            (now_iso, limit_rows),
-        )
+                """,
+                (now_iso, limit_rows),
+            ).fetchall()
+            expired_ids: list[int] = []
+            for row in rows:
+                if isinstance(row, dict):
+                    raw_id = row.get("id")
+                elif isinstance(row, (tuple, list)) and row:
+                    raw_id = row[0]
+                else:
+                    raw_id = None
+                try:
+                    parsed_id = int(raw_id)
+                except Exception:
+                    parsed_id = 0
+                if parsed_id > 0:
+                    expired_ids.append(parsed_id)
+            if expired_ids:
+                placeholders = ",".join("?" for _ in expired_ids)
+                conn.execute(
+                    f"DELETE FROM signup_verification_requests WHERE id IN ({placeholders})",
+                    tuple(expired_ids),
+                )
         conn.commit()
     except Exception as ex:
         try:
@@ -4664,9 +4714,129 @@ def is_agentive_job_search_request(message: str) -> bool:
     return bool((has_action and has_object) or (has_object and has_work_auth))
 
 
+def is_live_immigration_updates_request(message: str) -> bool:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text:
+        return False
+
+    immigration_terms = (
+        "immigration",
+        "visa",
+        "h1b",
+        "h-1b",
+        "f1",
+        "f-1",
+        "opt",
+        "stem opt",
+        "visa bulletin",
+        "green card",
+        "uscis",
+        "sevis",
+        "sevp",
+    )
+    if not any(term in text for term in immigration_terms):
+        return False
+
+    navigation_terms = (
+        "how to open",
+        "where is",
+        "open immigration updates",
+        "open visa updates",
+        "launch immigration updates",
+        "start immigration updates",
+    )
+    if any(term in text for term in navigation_terms):
+        return False
+
+    if (
+        ("immigration updates" in text or "visa updates" in text)
+        and re.search(
+            r"\b(?:do we have|is there|is|are)\b[\w\s]{0,80}\b(?:available|enabled|disabled|feature|capability|module)\b",
+            text,
+        )
+    ):
+        return False
+
+    capability_terms = (
+        "feature",
+        "features",
+        "capability",
+        "capabilities",
+        "module",
+        "available",
+        "enabled",
+        "disabled",
+        "not working",
+        "do we have",
+    )
+    live_info_terms = (
+        "latest",
+        "today",
+        "new",
+        "news",
+        "update",
+        "updates",
+        "bulletin",
+        "policy",
+        "rule",
+        "notice",
+        "deadline",
+        "date",
+        "timeline",
+        "result",
+        "results",
+        "selection",
+        "priority date",
+        "what",
+        "when",
+        "which",
+        "status",
+        "?",
+    )
+    if any(term in text for term in capability_terms) and not any(term in text for term in live_info_terms):
+        return False
+
+    return True
+
+
+def build_live_immigration_updates_response(message: str) -> str:
+    flags = get_effective_dashboard_feature_flags(st.session_state.get("user"))
+    if not flags.get("immigration_updates", False):
+        return "Immigration Updates is currently disabled."
+
+    repo = ImmigrationRepository(db_connect=db_connect)
+    summary_model = get_config_value("IMMIGRATION_SUMMARY_MODEL", "immigration", "summary_model", "gpt-4o-mini")
+    service = ImmigrationUpdatesService(
+        repository=repo,
+        ai_key_getter=get_zoswiai_key,
+        llm_model=summary_model,
+    )
+    cleaned_query = re.sub(r"\s+", " ", str(message or "").strip())
+    updates, live_note, _live_refresh_used = service.search_updates_live(
+        query=cleaned_query,
+        visa_categories=[],
+        limit=12,
+        force_refresh_on_miss=True,
+    )
+    answer = sanitize_zoswi_response_text(service.answer_query_from_updates(cleaned_query, updates))
+    note = sanitize_zoswi_response_text(str(live_note or "").strip())
+    if answer and note:
+        return f"{answer} {note}".strip()
+    if answer:
+        return answer
+    if note:
+        return note
+    return (
+        "I could not find a live immigration update for that question yet. "
+        "Try a specific term like H1B lottery, visa bulletin EB2, or STEM OPT."
+    )
+
+
 def is_zoswi_capability_request(message: str) -> bool:
     text = re.sub(r"\s+", " ", str(message or "").strip().lower())
     if not text:
+        return False
+    if is_live_immigration_updates_request(text):
         return False
 
     feature_terms = (
@@ -8282,13 +8452,17 @@ def ask_assistant_bot_stream(message: str):
         yield sanitize_zoswi_response_text(build_zoswi_builder_response())
         return
 
-    if is_zoswi_capability_request(message):
-        yield sanitize_zoswi_response_text(build_zoswi_capability_response(message))
-        return
-
     if is_agentive_job_search_request(message):
         _, response_text = run_agentive_job_search_from_message(message, source_profile="ZoSwi Chat Agent")
         yield response_text
+        return
+
+    if is_live_immigration_updates_request(message):
+        yield sanitize_zoswi_response_text(build_live_immigration_updates_response(message))
+        return
+
+    if is_zoswi_capability_request(message):
+        yield sanitize_zoswi_response_text(build_zoswi_capability_response(message))
         return
 
     key = get_zoswiai_key()
@@ -8327,12 +8501,15 @@ def ask_assistant_bot(message: str) -> str:
     if is_zoswi_builder_request(message):
         return sanitize_zoswi_response_text(build_zoswi_builder_response())
 
-    if is_zoswi_capability_request(message):
-        return sanitize_zoswi_response_text(build_zoswi_capability_response(message))
-
     if is_agentive_job_search_request(message):
         _, response_text = run_agentive_job_search_from_message(message, source_profile="ZoSwi Chat Agent")
         return response_text
+
+    if is_live_immigration_updates_request(message):
+        return sanitize_zoswi_response_text(build_live_immigration_updates_response(message))
+
+    if is_zoswi_capability_request(message):
+        return sanitize_zoswi_response_text(build_zoswi_capability_response(message))
 
     key = get_zoswiai_key()
     if not key:
@@ -8621,13 +8798,17 @@ def ask_ai_workspace_stream(message: str):
         yield sanitize_zoswi_response_text(build_zoswi_builder_response())
         return
 
-    if is_zoswi_capability_request(message):
-        yield sanitize_zoswi_response_text(build_zoswi_capability_response(message))
-        return
-
     if is_agentive_job_search_request(message):
         _, response_text = run_agentive_job_search_from_message(message, source_profile="Live Workspace Agent")
         yield response_text
+        return
+
+    if is_live_immigration_updates_request(message):
+        yield sanitize_zoswi_response_text(build_live_immigration_updates_response(message))
+        return
+
+    if is_zoswi_capability_request(message):
+        yield sanitize_zoswi_response_text(build_zoswi_capability_response(message))
         return
 
     key = get_zoswiai_key()
@@ -11498,6 +11679,15 @@ def render_auth_screen() -> None:
 
     with account_col:
         st.caption("Create an account or log in to start resume-job matching.")
+        builder_url = get_instant_builder_url()
+        if builder_url:
+            with st.container(key="auth_open_builder_btn"):
+                st.link_button(
+                    "Open ZoSwi Instant App Builder",
+                    builder_url,
+                    use_container_width=is_mobile,
+                )
+            st.caption(f"Instant App Builder URL: {builder_url}")
         auth_notice_message = str(st.session_state.get("auth_notice_message", "")).strip()
         if auth_notice_message:
             st.success(auth_notice_message)

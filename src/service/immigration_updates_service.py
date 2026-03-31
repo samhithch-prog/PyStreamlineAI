@@ -282,16 +282,18 @@ class ImmigrationUpdatesService:
 
     def answer_query_from_updates(self, query: str, updates: list[dict[str, Any]]) -> str:
         question = self._compact_text(str(query or ""))
-        rows = [item for item in updates if isinstance(item, dict)][:8]
         if not question:
             return ""
-        h1b_timeline_answer = self._build_h1b_timeline_answer(question)
-        if h1b_timeline_answer:
-            return h1b_timeline_answer
+        rows, has_direct_match = self._select_query_relevant_updates(question, updates, limit=8)
         if not rows:
             return (
                 "I could not find enough related updates to answer this yet. "
                 "Try a specific query like H1B lottery selection notice or visa bulletin EB2."
+            )
+        if self.looks_like_question(question) and not has_direct_match:
+            return (
+                f'I could not find a direct live match for "{question}" in the latest source updates. '
+                "Try a more specific keyword like H1B registration, visa bulletin EB2, or STEM OPT."
             )
 
         client = self._get_ai_client()
@@ -1026,6 +1028,135 @@ class ImmigrationUpdatesService:
             seen.add(key)
             deduped.append(normalized_item)
         return deduped[:8]
+
+    def _select_query_relevant_updates(
+        self,
+        query: str,
+        updates: list[dict[str, Any]],
+        limit: int = 8,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        rows = [item for item in updates if isinstance(item, dict)]
+        if not rows:
+            return [], False
+        safe_limit = max(1, min(20, int(limit or 8)))
+        ranked_latest = sorted(rows, key=self._sort_key_published_date, reverse=True)
+        cleaned_query = self._compact_text(str(query or "")).lower()
+        if not cleaned_query:
+            return ranked_latest[:safe_limit], bool(ranked_latest)
+
+        raw_tokens = re.findall(r"[a-z0-9\-]+", cleaned_query)
+        stop_words = {
+            "when",
+            "what",
+            "where",
+            "which",
+            "who",
+            "why",
+            "how",
+            "is",
+            "are",
+            "was",
+            "were",
+            "the",
+            "a",
+            "an",
+            "of",
+            "for",
+            "to",
+            "in",
+            "on",
+            "and",
+            "with",
+            "about",
+            "from",
+            "any",
+            "there",
+            "this",
+            "that",
+            "current",
+            "today",
+            "latest",
+            "new",
+            "news",
+            "update",
+            "updates",
+            "status",
+        }
+        tokens: list[str] = []
+        for token in raw_tokens:
+            normalized = token.replace("-", "")
+            if normalized in {"h1b", "f1", "eb1", "eb2", "eb3"}:
+                tokens.append(normalized)
+                continue
+            if token in stop_words:
+                continue
+            if len(token) < 3:
+                continue
+            tokens.append(token)
+        deduped_tokens: list[str] = []
+        seen_tokens: set[str] = set()
+        for token in tokens:
+            key = token.lower()
+            if key in seen_tokens:
+                continue
+            seen_tokens.add(key)
+            deduped_tokens.append(key)
+
+        broad_only_tokens = {
+            "immigration",
+            "visa",
+            "visas",
+            "bulletin",
+            "policy",
+            "policies",
+        }
+        if deduped_tokens and all(token in broad_only_tokens for token in deduped_tokens):
+            return ranked_latest[:safe_limit], True
+
+        inferred_categories = set(self._infer_categories_from_query(cleaned_query))
+        scored_rows: list[tuple[int, float, dict[str, Any]]] = []
+        for row in rows:
+            haystack = self._compact_text(
+                " ".join(
+                    [
+                        str(row.get("title", "")).strip(),
+                        str(row.get("summary", "")).strip(),
+                        str(row.get("source", "")).strip(),
+                        str(row.get("visa_category", "")).strip(),
+                        " ".join(str(tag).strip() for tag in row.get("tags", []) if str(tag).strip()),
+                    ]
+                )
+            ).lower()
+            dense_haystack = haystack.replace("-", "")
+            score = 0
+            if cleaned_query and cleaned_query in haystack:
+                score += 4
+            for token in deduped_tokens:
+                if token in {"h1b", "f1", "eb1", "eb2", "eb3"}:
+                    if token in dense_haystack:
+                        score += 3
+                elif token in haystack:
+                    score += 2
+            row_category = str(row.get("visa_category", "")).strip()
+            if row_category and row_category in inferred_categories:
+                score += 3
+            scored_rows.append((score, self._sort_key_published_date(row), row))
+
+        ranked_scored = sorted(scored_rows, key=lambda item: (item[0], item[1]), reverse=True)
+        matched_rows = [row for score, _ts, row in ranked_scored if score > 0]
+        if matched_rows:
+            return matched_rows[:safe_limit], True
+
+        if inferred_categories:
+            category_rows = [
+                row
+                for row in ranked_latest
+                if str(row.get("visa_category", "")).strip() in inferred_categories
+            ]
+            if category_rows:
+                return category_rows[:safe_limit], True
+
+        return ranked_latest[:safe_limit], False
 
     @staticmethod
     def _sort_key_published_date(row: dict[str, Any]) -> float:
