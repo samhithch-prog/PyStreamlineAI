@@ -872,15 +872,15 @@ def get_instant_builder_url() -> str:
 
 
 def is_instant_builder_auth_link_enabled() -> bool:
+    if is_production_environment():
+        return False
     configured = get_config_value(
         ZOSWI_FEATURE_INSTANT_BUILDER_AUTH_LINK_ENABLED_KEY,
         "app",
         "instant_builder_auth_link_enabled",
         "",
     )
-    if str(configured or "").strip():
-        return parse_bool(configured, default=False)
-    return not is_production_environment()
+    return parse_bool(configured, default=False)
 
 
 @lru_cache(maxsize=1)

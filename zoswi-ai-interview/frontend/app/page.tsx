@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 type HomePageProps = {
-  searchParams?: Record<string, string | string[] | undefined>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
 function getFirstQueryValue(value: string | string[] | undefined) {
@@ -11,13 +11,14 @@ function getFirstQueryValue(value: string | string[] | undefined) {
   return String(value || "").trim();
 }
 
-export default function HomePage({ searchParams }: HomePageProps) {
+export default async function HomePage({ searchParams }: HomePageProps) {
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const query = new URLSearchParams();
-  const candidate = getFirstQueryValue(searchParams?.candidate);
-  const role = getFirstQueryValue(searchParams?.role);
-  const type = getFirstQueryValue(searchParams?.type);
-  const source = getFirstQueryValue(searchParams?.source);
-  const launchToken = getFirstQueryValue(searchParams?.launch_token);
+  const candidate = getFirstQueryValue(resolvedSearchParams?.candidate);
+  const role = getFirstQueryValue(resolvedSearchParams?.role);
+  const type = getFirstQueryValue(resolvedSearchParams?.type);
+  const source = getFirstQueryValue(resolvedSearchParams?.source);
+  const launchToken = getFirstQueryValue(resolvedSearchParams?.launch_token);
 
   if (candidate) {
     query.set("candidate", candidate);
@@ -58,8 +59,14 @@ export default function HomePage({ searchParams }: HomePageProps) {
           High-impact live interview practice with adaptive AI questioning, natural voice conversation, and actionable feedback.
         </p>
         <Link
-          href={interviewHref}
+          href="/login"
           className="mt-8 inline-flex items-center justify-center rounded-xl border border-cyan-200/30 bg-cyan-400/90 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300"
+        >
+          Login
+        </Link>
+        <Link
+          href={interviewHref}
+          className="ml-3 mt-8 inline-flex items-center justify-center rounded-xl border border-cyan-200/30 bg-cyan-400/90 px-6 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300"
         >
           Enter Interview Room
         </Link>
