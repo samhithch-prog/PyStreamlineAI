@@ -4799,6 +4799,28 @@ def is_live_immigration_updates_request(message: str) -> bool:
     return True
 
 
+def should_force_live_immigration_refresh(message: str) -> bool:
+    text = re.sub(r"\s+", " ", str(message or "").strip().lower())
+    if not text:
+        return False
+    if not any(term in text for term in ("h1b", "h-1b")):
+        return False
+    freshness_terms = (
+        "result",
+        "results",
+        "selection",
+        "selected",
+        "lottery",
+        "date",
+        "when",
+        "timeline",
+        "latest",
+        "today",
+        "uscis",
+    )
+    return any(term in text for term in freshness_terms)
+
+
 def build_live_immigration_updates_response(message: str) -> str:
     flags = get_effective_dashboard_feature_flags(st.session_state.get("user"))
     if not flags.get("immigration_updates", False):
@@ -4812,14 +4834,27 @@ def build_live_immigration_updates_response(message: str) -> str:
         llm_model=summary_model,
     )
     cleaned_query = re.sub(r"\s+", " ", str(message or "").strip())
+    force_live_refresh = should_force_live_immigration_refresh(cleaned_query)
+    refresh_note = ""
+    if force_live_refresh:
+        refresh_result = service.refresh_updates(force=True, interval_hours=6)
+        if refresh_result.refreshed:
+            refresh_note = (
+                f"Live USCIS refresh completed ({int(refresh_result.inserted_count or 0)} new, "
+                f"{int(refresh_result.updated_count or 0)} updated)."
+            )
     updates, live_note, _live_refresh_used = service.search_updates_live(
         query=cleaned_query,
         visa_categories=[],
         limit=12,
-        force_refresh_on_miss=True,
+        force_refresh_on_miss=not force_live_refresh,
     )
     answer = sanitize_zoswi_response_text(service.answer_query_from_updates(cleaned_query, updates))
-    note = sanitize_zoswi_response_text(str(live_note or "").strip())
+    note_parts = [
+        sanitize_zoswi_response_text(refresh_note),
+        sanitize_zoswi_response_text(str(live_note or "").strip()),
+    ]
+    note = " ".join(part for part in note_parts if part).strip()
     if answer and note:
         return f"{answer} {note}".strip()
     if answer:
