@@ -28,6 +28,15 @@ def render_app_styles() -> None:
         [data-testid="stDecoration"] {
             display: none !important;
         }
+        [class*="_viewerBadge_"],
+        [class*="viewerBadge"],
+        [class*="_profileContainer_"],
+        [class*="_profilePreview_"],
+        [class*="_createdByLabel_"],
+        [class*="_streamlitLogoWrapper_"] {
+            display: none !important;
+            visibility: hidden !important;
+        }
         #MainMenu,
         footer {
             visibility: hidden !important;
