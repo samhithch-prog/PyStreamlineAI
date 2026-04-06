@@ -1,4 +1,10 @@
-import type { AccessTokenResponse, InterviewResultResponse, StartInterviewResponse, WebSocketTokenResponse } from "./types";
+import type {
+  AccessTokenResponse,
+  InstantBuilderGenerateResponse,
+  InterviewResultResponse,
+  StartInterviewResponse,
+  WebSocketTokenResponse
+} from "./types";
 
 const PERSONAL_EMAIL_DOMAINS = new Set([
   "gmail.com",
@@ -240,6 +246,19 @@ export function getRecruiterScorecard(sessionId: string, accessToken?: string) {
     method: "GET",
     headers: { ...buildAuthHeaders(accessToken) },
     cache: "no-store"
+  });
+}
+
+export function generateInstantBuilderApp(payload: {
+  prompt: string;
+  current_spec?: Record<string, unknown>;
+  current_files?: Record<string, string>;
+  current_preview_html?: string;
+}) {
+  return request<InstantBuilderGenerateResponse>("/instant-builder/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
   });
 }
 

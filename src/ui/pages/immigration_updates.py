@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -95,6 +96,30 @@ def _cached_refresh_setting(setting_key: str) -> str:
     return repo.get_setting(setting_key)
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_uscis_forms_catalog(query: str, limit: int) -> list[dict[str, Any]]:
+    repo = ImmigrationRepository(db_connect=db_connect)
+    summary_model = get_config_value("IMMIGRATION_SUMMARY_MODEL", "immigration", "summary_model", "gpt-4o-mini")
+    service = ImmigrationUpdatesService(
+        repository=repo,
+        ai_key_getter=get_zoswiai_key,
+        llm_model=summary_model,
+    )
+    return service.list_uscis_forms(query=query, limit=limit)
+
+
+@st.cache_data(ttl=1200, show_spinner=False)
+def _cached_uscis_form_download(download_url: str) -> tuple[bytes, str, str]:
+    repo = ImmigrationRepository(db_connect=db_connect)
+    summary_model = get_config_value("IMMIGRATION_SUMMARY_MODEL", "immigration", "summary_model", "gpt-4o-mini")
+    service = ImmigrationUpdatesService(
+        repository=repo,
+        ai_key_getter=get_zoswiai_key,
+        llm_model=summary_model,
+    )
+    return service.download_uscis_form_pdf(download_url=download_url)
+
+
 def render_immigration_updates_view(user: dict[str, Any]) -> None:
     _ = user
     is_mobile = is_mobile_browser()
@@ -137,6 +162,16 @@ def render_immigration_updates_view(user: dict[str, Any]) -> None:
         st.session_state.immigration_feed_result_token = ""
     if "immigration_auto_refresh_checked_at" not in st.session_state:
         st.session_state.immigration_auto_refresh_checked_at = 0.0
+    if "immigration_forms_query" not in st.session_state:
+        st.session_state.immigration_forms_query = ""
+    if "immigration_forms_loaded" not in st.session_state:
+        st.session_state.immigration_forms_loaded = False
+    if "immigration_form_download_cache" not in st.session_state:
+        st.session_state.immigration_form_download_cache = {}
+    if "immigration_forms_page" not in st.session_state:
+        st.session_state.immigration_forms_page = 1
+    if "immigration_forms_result_token" not in st.session_state:
+        st.session_state.immigration_forms_result_token = ""
 
     st.markdown(
         """
@@ -267,6 +302,22 @@ def render_immigration_updates_view(user: dict[str, Any]) -> None:
             border-color: #38bdf8 !important;
             background: linear-gradient(180deg, #ffffff 0%, #e0f2fe 100%) !important;
         }
+        .st-key-immigration_forms_get_btn_wrap .stButton > button,
+        .st-key-immigration_forms_get_btn_wrap .stButton [data-testid^="baseButton"] {
+            border: 0 !important;
+            border-radius: 12px !important;
+            min-height: 2.45rem !important;
+            color: #ffffff !important;
+            font-weight: 800 !important;
+            background: linear-gradient(135deg, #0ea5e9 0%, #14b8a6 100%) !important;
+            box-shadow: 0 10px 24px rgba(14, 165, 233, 0.28) !important;
+        }
+        .st-key-immigration_forms_get_btn_wrap .stButton > button:hover,
+        .st-key-immigration_forms_get_btn_wrap .stButton [data-testid^="baseButton"]:hover {
+            filter: brightness(1.03) saturate(1.05) !important;
+            transform: translateY(-1px) !important;
+            box-shadow: 0 12px 28px rgba(20, 184, 166, 0.26) !important;
+        }
         </style>
         <div class="immigration-shell">
             <h2 class="immigration-title">Immigration &amp; Visa Updates</h2>
@@ -341,6 +392,8 @@ def render_immigration_updates_view(user: dict[str, Any]) -> None:
         _cached_search_updates.clear()
         _cached_recent_alerts.clear()
         _cached_refresh_setting.clear()
+        _cached_uscis_forms_catalog.clear()
+        _cached_uscis_form_download.clear()
         st.session_state.immigration_last_refresh_message = refresh_result.message
         st.session_state.immigration_auto_refresh_checked_at = time.time()
         st.session_state.immigration_ai_brief = ""
@@ -453,6 +506,155 @@ def render_immigration_updates_view(user: dict[str, Any]) -> None:
             "Privacy note: This answer is generated from your query and live source updates. "
             "Please avoid entering sensitive personal information."
         )
+
+    def _render_forms_panel() -> None:
+        st.markdown("### Immigration Forms")
+        st.caption(
+            "Search by form name or number (for example, I-129, I-765, I-983), then click Get Forms. "
+            "Includes USCIS forms and key DHS forms."
+        )
+        forms_query = st.text_input(
+            "Search immigration forms",
+            key="immigration_forms_query",
+            placeholder="Search forms (e.g., I-765, I-129, I-983)",
+            label_visibility="collapsed",
+        )
+        if is_mobile:
+            with st.container(key="immigration_forms_get_btn_wrap"):
+                forms_get_clicked = st.button(
+                    "Get Forms",
+                    key="immigration_forms_get_now",
+                    type="primary",
+                    use_container_width=True,
+                )
+        else:
+            forms_action_col, _ = st.columns([2.1, 6.0], gap="small")
+            with forms_action_col:
+                with st.container(key="immigration_forms_get_btn_wrap"):
+                    forms_get_clicked = st.button(
+                        "Get Forms",
+                        key="immigration_forms_get_now",
+                        type="primary",
+                        use_container_width=True,
+                    )
+
+        if forms_get_clicked:
+            st.session_state.immigration_forms_loaded = True
+            st.session_state.immigration_forms_page = 1
+
+        if not bool(st.session_state.get("immigration_forms_loaded", False)):
+            st.info("Use the search bar above and click Get Forms to load downloadable immigration forms.")
+            return
+
+        forms_query_cleaned = str(forms_query or "").strip()
+        try:
+            with st.spinner("Loading immigration forms..."):
+                form_rows = _cached_uscis_forms_catalog(query=forms_query_cleaned, limit=500)
+        except Exception:
+            st.warning("Unable to load forms right now. Please try again.")
+            return
+
+        if not form_rows:
+            st.info("No matching forms found. Try searching by form number like I-129 or I-765.")
+            return
+
+        result_token = f"{forms_query_cleaned.lower()}|{len(form_rows)}"
+        if result_token != st.session_state.get("immigration_forms_result_token", ""):
+            st.session_state.immigration_forms_result_token = result_token
+            st.session_state.immigration_forms_page = 1
+
+        total_items = len(form_rows)
+        forms_page_size = 12 if is_mobile else 14
+        total_pages = max(1, (total_items + forms_page_size - 1) // forms_page_size)
+        current_page = max(1, min(total_pages, int(st.session_state.get("immigration_forms_page", 1) or 1)))
+        st.session_state.immigration_forms_page = current_page
+
+        if is_mobile:
+            forms_pager_prev, forms_pager_next = st.columns(2, gap="small")
+            with forms_pager_prev:
+                if st.button("Prev", key="immigration_forms_prev", use_container_width=True, disabled=current_page <= 1):
+                    st.session_state.immigration_forms_page = max(1, current_page - 1)
+                    st.rerun()
+            with forms_pager_next:
+                if st.button("Next", key="immigration_forms_next", use_container_width=True, disabled=current_page >= total_pages):
+                    st.session_state.immigration_forms_page = min(total_pages, current_page + 1)
+                    st.rerun()
+            st.caption(f"{total_items} form(s) found. Page {current_page} of {total_pages}.")
+        else:
+            forms_pager_prev, forms_pager_next, forms_pager_text = st.columns([1.2, 1.2, 6.2], gap="small")
+            with forms_pager_prev:
+                if st.button("Prev", key="immigration_forms_prev", use_container_width=True, disabled=current_page <= 1):
+                    st.session_state.immigration_forms_page = max(1, current_page - 1)
+                    st.rerun()
+            with forms_pager_next:
+                if st.button("Next", key="immigration_forms_next", use_container_width=True, disabled=current_page >= total_pages):
+                    st.session_state.immigration_forms_page = min(total_pages, current_page + 1)
+                    st.rerun()
+            with forms_pager_text:
+                st.caption(f"{total_items} form(s) found. Showing page {current_page} of {total_pages}.")
+
+        start_idx = (current_page - 1) * forms_page_size
+        end_idx = start_idx + forms_page_size
+        visible_rows = form_rows[start_idx:end_idx]
+
+        form_download_cache = dict(st.session_state.get("immigration_form_download_cache", {}))
+        for row in visible_rows:
+            form_number = str(row.get("form_number", "")).strip() or "USCIS Form"
+            title = str(row.get("title", "")).strip() or form_number
+            source = str(row.get("source", "")).strip() or "USCIS"
+            download_url = str(row.get("download_url", "")).strip()
+            if not download_url:
+                continue
+
+            hash_seed = download_url.encode("utf-8", errors="ignore")
+            form_key = hashlib.sha256(hash_seed).hexdigest()[:20]
+            with st.container():
+                info_col, action_col = st.columns([6.8, 2.2], gap="small")
+                with info_col:
+                    st.markdown(f"**{title}**")
+                    st.caption(f"{form_number} | {source}")
+                with action_col:
+                    if st.button("Get Form", key=f"immigration_form_fetch_{form_key}", use_container_width=True):
+                        with st.spinner(f"Preparing {form_number}..."):
+                            payload, file_name, error_message = _cached_uscis_form_download(download_url=download_url)
+                        if error_message:
+                            st.warning(error_message)
+                        elif not payload:
+                            st.warning("Unable to fetch this form right now.")
+                        else:
+                            next_cache = dict(st.session_state.get("immigration_form_download_cache", {}))
+                            next_cache[form_key] = {
+                                "payload": payload,
+                                "file_name": str(file_name or "uscis-form.pdf").strip() or "uscis-form.pdf",
+                            }
+                            while len(next_cache) > 14:
+                                oldest_key = next(iter(next_cache))
+                                next_cache.pop(oldest_key, None)
+                            st.session_state.immigration_form_download_cache = next_cache
+                            form_download_cache = next_cache
+
+                    cached_entry = form_download_cache.get(form_key)
+                    payload_data = b""
+                    file_name = "uscis-form.pdf"
+                    if isinstance(cached_entry, dict):
+                        raw_payload = cached_entry.get("payload", b"")
+                        if isinstance(raw_payload, bytearray):
+                            payload_data = bytes(raw_payload)
+                        elif isinstance(raw_payload, bytes):
+                            payload_data = raw_payload
+                        raw_file_name = str(cached_entry.get("file_name", "")).strip()
+                        if raw_file_name:
+                            file_name = raw_file_name
+                    if payload_data:
+                        st.download_button(
+                            "Download PDF",
+                            data=payload_data,
+                            file_name=file_name,
+                            mime="application/pdf",
+                            key=f"immigration_form_download_{form_key}",
+                            use_container_width=True,
+                        )
+                st.markdown("---")
 
     def _render_feed_panel() -> None:
         feed_title_col, feed_toggle_col = st.columns([6.8, 2.2], gap="small")
@@ -572,12 +774,16 @@ def render_immigration_updates_view(user: dict[str, Any]) -> None:
                 st.markdown("---")
 
     if is_mobile:
+        _render_forms_panel()
+        st.markdown("---")
         _render_feed_panel()
         st.markdown("---")
         _render_ai_summary_panel()
     else:
         left_col, right_col = st.columns([2.2, 1], gap="large")
         with left_col:
+            _render_forms_panel()
+            st.markdown("---")
             _render_feed_panel()
         with right_col:
             _render_ai_summary_panel()

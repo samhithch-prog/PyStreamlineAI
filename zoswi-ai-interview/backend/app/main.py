@@ -4,6 +4,7 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from time import perf_counter
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.interview import router as interview_router
+from app.api.routes.instant_builder import router as instant_builder_router
 from app.api.routes.recruiter import router as recruiter_router
 from app.core.config import get_settings
 from app.core.db import engine, init_db
@@ -22,24 +24,70 @@ from app.core.observability import configure_observability
 
 settings = get_settings()
 request_logger = logging.getLogger("app.requests")
+DEV_ENV_NAMES = {"development", "dev", "local", "test"}
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 def _get_allowed_origins() -> list[str]:
+    def _with_local_aliases(origin: str) -> list[str]:
+        cleaned = str(origin or "").strip().rstrip("/")
+        if not cleaned:
+            return []
+        parsed = urlsplit(cleaned)
+        host = str(parsed.hostname or "").strip().lower()
+        if host not in {"localhost", "127.0.0.1"}:
+            return [cleaned]
+        alias_host = "127.0.0.1" if host == "localhost" else "localhost"
+        alias_netloc = f"{alias_host}:{parsed.port}" if parsed.port else alias_host
+        alias = f"{parsed.scheme}://{alias_netloc}".rstrip("/")
+        return [cleaned, alias]
+
     raw_value = str(settings.frontend_origin or "").strip()
     if not raw_value:
-        return ["http://localhost:3000"]
+        return ["http://localhost:3000", "http://127.0.0.1:3000"]
     origins: list[str] = []
     for origin in raw_value.split(","):
         cleaned = str(origin or "").strip().rstrip("/")
         if cleaned:
-            origins.append(cleaned)
-    return origins or ["http://localhost:3000"]
+            origins.extend(_with_local_aliases(cleaned))
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for origin in origins:
+        if origin in seen:
+            continue
+        seen.add(origin)
+        deduped.append(origin)
+    return deduped or ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
 ALLOWED_ORIGINS = _get_allowed_origins()
+CORS_ALLOW_LOCAL_ORIGIN_REGEX = (
+    r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+    if str(settings.app_env or "").strip().lower() in DEV_ENV_NAMES
+    else ""
+)
+
+
+def _is_localhost_origin(origin: str) -> bool:
+    cleaned = _normalize_origin(origin)
+    if not cleaned:
+        return False
+    parsed = urlsplit(cleaned)
+    host = str(parsed.hostname or "").strip().lower()
+    return host in {"localhost", "127.0.0.1"}
+
+
+def _is_allowed_origin(origin: str) -> bool:
+    cleaned = _normalize_origin(origin)
+    if not cleaned:
+        return False
+    if cleaned in ALLOWED_ORIGINS:
+        return True
+    if CORS_ALLOW_LOCAL_ORIGIN_REGEX and _is_localhost_origin(cleaned):
+        return True
+    return False
 
 
 def _normalize_origin(origin: str) -> str:
@@ -50,7 +98,7 @@ def _resolve_allowed_request_origin(request: Request) -> str:
     origin = _normalize_origin(request.headers.get("origin", ""))
     if not origin:
         return ""
-    return origin if origin in ALLOWED_ORIGINS else ""
+    return origin if _is_allowed_origin(origin) else ""
 
 
 def _append_vary_origin(existing: str) -> str:
@@ -97,6 +145,7 @@ app.add_middleware(HttpRateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=CORS_ALLOW_LOCAL_ORIGIN_REGEX or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -105,6 +154,7 @@ app.add_middleware(
 app.include_router(interview_router)
 app.include_router(auth_router)
 app.include_router(recruiter_router)
+app.include_router(instant_builder_router)
 
 
 @app.middleware("http")

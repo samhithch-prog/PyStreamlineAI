@@ -4,6 +4,17 @@ from __future__ import annotations
 from src.app_runtime import *  # noqa: F401,F403
 from urllib.parse import quote_plus
 
+from src.repository.careers_repository import CareersRepository
+from src.repository.resume_builder_repository import ResumeBuilderRepository
+from src.service.careers_applications_service import CareersApplicationsService
+from src.service.careers_jobs_service import CareersJobsService
+from src.service.resume_builder_service import ResumeBuilderService
+from src.service.resume_export_service import ResumeExportService
+from src.ui.pages.careers.applications_tab import render_applications_tab
+from src.ui.pages.careers.jobs_tab import derive_resume_role_hints, render_jobs_tab
+from src.ui.pages.careers.resume_builder_tab import render_resume_builder_tab
+from src.ui.pages.careers.saved_tab import render_saved_tab
+
 
 def _resolve_resume_role_hint(resume_text: str, role_query: str) -> str:
     clean_role = re.sub(r"\s+", " ", str(role_query or "").strip())
@@ -101,6 +112,10 @@ def render_top_company_career_links(
             st.markdown(f"[{item['name']} Careers]({item['url']})")
 
 def render_careers_profile_setup() -> None:
+    if bool(st.session_state.get("careers_profile_clear_requested", False)):
+        _clear_careers_prepared_profile_state()
+        st.session_state["careers_profile_clear_requested"] = False
+
     is_mobile = is_mobile_browser()
     st.markdown("### Career Tailoring Setup")
     st.caption("Choose how ZoSwi should tailor your job matching context.")
@@ -234,20 +249,145 @@ def render_careers_profile_setup() -> None:
 
         st.session_state.careers_resume_text = str(prepared_resume or "").strip()
         st.session_state.careers_target_job_description = prepared_jd
+        role_hint_note = _seed_jobs_role_hints_from_prepared_profile(
+            resume_text=str(prepared_resume or ""),
+            target_job_description=str(prepared_jd or ""),
+        )
         st.session_state.careers_profile_status = (
             f"Profile ready in {mode} mode. {source_note}".strip()
         )
+        if role_hint_note:
+            st.session_state["careers_profile_role_hint_note"] = role_hint_note
         st.success(str(st.session_state.get("careers_profile_status", "")).strip() or "Careers profile prepared.")
 
     current_status = str(st.session_state.get("careers_profile_status", "")).strip()
     if current_status:
         st.caption(current_status)
 
+    uploaded_file_name = str(st.session_state.get("careers_resume_file_name", "") or "").strip()
+    has_prepared_resume = bool(str(st.session_state.get("careers_resume_text", "") or "").strip())
+    if uploaded_file_name and has_prepared_resume:
+        st.markdown(
+            """
+            <style>
+            .careers-uploaded-resume-row {
+                display: flex;
+                align-items: center;
+                gap: 0.45rem;
+                border: 1px solid #dbeafe;
+                background: #f8fbff;
+                border-radius: 999px;
+                padding: 0.24rem 0.62rem;
+                margin-top: 0.1rem;
+            }
+            .careers-uploaded-resume-doc {
+                font-size: 0.9rem;
+                line-height: 1;
+            }
+            .careers-uploaded-resume-name {
+                color: #0f172a;
+                font-size: 0.8rem;
+                font-weight: 650;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .st-key-careers_resume_remove_btn button,
+            .st-key-careers_resume_remove_btn [data-testid^="baseButton"] {
+                min-height: 1.75rem !important;
+                height: 1.75rem !important;
+                width: 1.75rem !important;
+                border-radius: 999px !important;
+                border: 1px solid #ef4444 !important;
+                background: #fff1f2 !important;
+                color: #b91c1c !important;
+                font-weight: 800 !important;
+                padding: 0 !important;
+                animation: careersRemoveXBlink 1.05s ease-in-out infinite;
+            }
+            .st-key-careers_resume_remove_btn button:hover,
+            .st-key-careers_resume_remove_btn [data-testid^="baseButton"]:hover {
+                background: #fee2e2 !important;
+                border-color: #dc2626 !important;
+            }
+            @keyframes careersRemoveXBlink {
+                0% { opacity: 1; transform: scale(1); }
+                50% { opacity: 0.35; transform: scale(0.95); }
+                100% { opacity: 1; transform: scale(1); }
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        row_cols = st.columns([0.92, 0.08], gap="small")
+        with row_cols[0]:
+            safe_name = html.escape(uploaded_file_name)
+            st.markdown(
+                f"""
+                <div class="careers-uploaded-resume-row">
+                    <span class="careers-uploaded-resume-doc">[doc]</span>
+                    <span class="careers-uploaded-resume-name">{safe_name}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with row_cols[1]:
+            with st.container(key="careers_resume_remove_btn"):
+                if st.button("x", key="careers_remove_resume_profile_btn", help="Remove uploaded resume"):
+                    st.session_state["careers_profile_clear_requested"] = True
+                    st.rerun()
+    role_hint_note = str(st.session_state.get("careers_profile_role_hint_note", "") or "").strip()
+    if role_hint_note:
+        st.caption(role_hint_note)
+
     active_resume, active_jd = get_active_careers_profile_context()
     if active_resume:
         active_mode = str(st.session_state.get("careers_input_mode", "Resume Only")).strip() or "Resume Only"
         jd_state = "Attached" if active_jd else "Not attached"
         st.caption(f"Active profile: {active_mode} | Target JD: {jd_state}")
+
+
+def _clear_careers_prepared_profile_state() -> None:
+    st.session_state["careers_resume_text"] = ""
+    st.session_state["careers_resume_file_name"] = ""
+    st.session_state["careers_target_job_description"] = ""
+    st.session_state["careers_profile_status"] = ""
+    st.session_state["careers_profile_role_hint_note"] = ""
+    st.session_state["careers_jobs_role_suggestions"] = []
+    st.session_state["careers_jobs_resume_default_role"] = ""
+    st.session_state["careers_jobs_role_prefill_signature"] = ""
+    st.session_state.pop("careers_target_job_description_input", None)
+    st.session_state.pop("careers_resume_upload", None)
+
+
+def _seed_jobs_role_hints_from_prepared_profile(resume_text: str, target_job_description: str) -> str:
+    hints = derive_resume_role_hints(
+        resume_text=str(resume_text or "").strip(),
+        target_job_description=str(target_job_description or "").strip(),
+    )
+    suggestions_raw = hints.get("suggestions", [])
+    suggestions = [str(item).strip() for item in suggestions_raw if str(item).strip()] if isinstance(suggestions_raw, list) else []
+    default_role = str(hints.get("default_role", "") or "").strip()
+    default_domain = str(hints.get("default_domain", "") or "").strip()
+    signature = str(hints.get("signature", "") or "").strip()
+
+    st.session_state["careers_jobs_role_suggestions"] = suggestions
+    st.session_state["careers_jobs_resume_default_role"] = default_role
+    st.session_state["careers_jobs_role_prefill_signature"] = signature
+
+    current_role_query = str(st.session_state.get("careers_jobs_role_query", "") or "").strip()
+    if not current_role_query and default_role:
+        st.session_state["careers_jobs_role_query"] = default_role
+
+    current_domains = st.session_state.get("careers_jobs_domains")
+    if default_domain and (not isinstance(current_domains, list) or not current_domains):
+        st.session_state["careers_jobs_domains"] = [default_domain]
+
+    if default_role and default_domain:
+        return f"Smart Job Board ready: default role '{default_role}' with domain '{default_domain}'."
+    if default_role:
+        return f"Smart Job Board ready: default role '{default_role}'."
+    return ""
 
 
 
@@ -656,6 +796,17 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
 
     if isinstance(results, list) and results:
         st.markdown("#### Recommended Jobs")
+        source_counts: dict[str, int] = {}
+        for row in results:
+            if not isinstance(row, dict):
+                continue
+            source_name = str(row.get("source", "")).strip() or "External API"
+            source_counts[source_name] = source_counts.get(source_name, 0) + 1
+        if source_counts:
+            source_summary = " | ".join(
+                f"{name}: {count}" for name, count in sorted(source_counts.items(), key=lambda item: item[0])
+            )
+            st.caption(f"Source coverage in current shortlist: {source_summary}")
         for idx, item in enumerate(results):
             if not isinstance(item, dict):
                 continue
@@ -663,6 +814,7 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
             company = str(item.get("company", "")).strip() or "Unknown company"
             location = str(item.get("location", "")).strip() or "Location not listed"
             posted_label = format_posted_age(str(item.get("posted_at", "")).strip())
+            source_name = str(item.get("source", "")).strip() or "External API"
             overall_score = int(item.get("overall_score", 0) or 0)
             resume_match_score = int(item.get("resume_match_score", 0) or 0)
             sponsorship_status = str(item.get("sponsorship_status", "")).strip() or "Unknown"
@@ -684,7 +836,7 @@ def render_job_match_mvp_panel(user: dict[str, Any]) -> None:
                     <div style="display:flex;justify-content:space-between;gap:1rem;align-items:flex-start;">
                         <div>
                             <p style="margin:0;font-size:1rem;font-weight:700;color:#0f172a;">{html.escape(title)}</p>
-                            <p style="margin:0.1rem 0 0 0;font-size:0.9rem;color:#1e293b;">{html.escape(company)} | {html.escape(location)} | {html.escape(posted_label)}</p>
+                            <p style="margin:0.1rem 0 0 0;font-size:0.9rem;color:#1e293b;">{html.escape(company)} | {html.escape(location)} | {html.escape(posted_label)} | Source: {html.escape(source_name)}</p>
                         </div>
                         <div style="text-align:right;">
                             <p style="margin:0;font-size:0.8rem;color:#475569;">Apply readiness</p>
@@ -769,44 +921,73 @@ def render_careers_view(user: dict[str, Any]) -> None:
     analysis_score = get_careers_analysis_score(active_resume_text, active_target_jd)
     full_name = str(user.get("full_name", "")).strip()
     render_careers_motivation_hero(full_name, analysis_score)
-    st.markdown(
-        """
-        <style>
-            @keyframes careers-tip-blink {
-                0%, 100% { opacity: 1; box-shadow: 0 0 0 rgba(194, 116, 245, 0); }
-                50% { opacity: 0.72; box-shadow: 0 0 14px rgba(194, 116, 245, 0.28); }
-            }
-        </style>
-        <div style="text-align:center;">
-            <div style="display:inline-block;max-width:92%;margin:0.38rem auto 0.62rem auto;color:#475569;font-size:0.82rem;line-height:1.35;font-weight:700;border:1px solid rgba(157,125,233,0.34);background:linear-gradient(90deg, rgba(194,116,245,0.08), rgba(199,242,245,0.11));border-radius:10px;padding:0.34rem 0.5rem;animation:careers-tip-blink 1.2s ease-in-out infinite;text-align:center;white-space:normal;overflow-wrap:anywhere;">
-                <span style="display:inline-flex;align-items:center;justify-content:center;width:0.95rem;height:0.95rem;border:1px solid #94a3b8;border-radius:999px;color:#64748b;font-size:0.68rem;font-weight:800;line-height:1;vertical-align:middle;margin-right:0.28rem;">i</span>
-                <span style="color:#9D7DE9;font-weight:800;">ZoSwi</span>
-                can create AI-based applications that help you apply to jobs faster, but you still know best what you are truly capable of.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
     if home_profile_ready:
-        st.caption("Home Resume-JD score found. You can use it directly or switch to Careers tailoring setup.")
+        st.caption("Home Resume-JD profile found. You can reuse it or upload a custom Careers profile.")
         st.toggle(
             "Use Careers Tailoring Setup Here",
             key="careers_use_custom_profile",
-            help="Turn on to upload resume/JD directly in Careers instead of reusing Home profile.",
+            help="Turn on to upload resume/JD in Careers instead of reusing Home profile.",
         )
         if bool(st.session_state.get("careers_use_custom_profile", False)):
             render_careers_profile_setup()
     else:
-        st.info("Home resume/JD score was not found. Please prepare your profile in Careers setup below.")
+        st.info("Home resume/JD profile not found. Prepare your profile in Careers setup below.")
         render_careers_profile_setup()
 
-    active_resume_text, _ = get_active_careers_profile_context()
-    if not str(active_resume_text or "").strip():
-        st.info("Upload your resume in Careers setup to start job matching.")
-        st.caption("You can also run Home analysis first and Careers will reuse that resume automatically.")
-        return
-    render_job_match_mvp_panel(user)
+    active_resume_text, active_target_jd = get_active_careers_profile_context()
+    default_profile = _build_careers_default_profile(active_resume_text, active_target_jd)
+
+    careers_repo = CareersRepository(db_connect=db_connect)
+    careers_repo.create_tables()
+    jobs_service = CareersJobsService(
+        repository=careers_repo,
+        ai_key_getter=get_zoswiai_key,
+        ai_model=str(get_config_value("ZOSWI_AI_MODEL", "ai", "model_name", "gpt-4o-mini") or "gpt-4o-mini").strip(),
+    )
+    applications_service = CareersApplicationsService(repository=careers_repo)
+    resume_repo = ResumeBuilderRepository(db_connect=db_connect)
+    resume_repo.create_tables()
+    resume_builder_service = ResumeBuilderService(
+        repository=resume_repo,
+        ai_key_getter=get_zoswiai_key,
+        model_name=str(get_config_value("ZOSWI_AI_MODEL", "ai", "model_name", "gpt-4o-mini") or "gpt-4o-mini").strip(),
+    )
+    resume_export_service = ResumeExportService()
+
+    with st.container(key="careers_workspace_scope"):
+        jobs_tab, saved_tab, applications_tab, resume_builder_tab = st.tabs(
+            ["Jobs", "Saved", "Applications", "Resume Builder"]
+        )
+        with jobs_tab:
+            render_jobs_tab(
+                user=user,
+                jobs_service=jobs_service,
+                applications_service=applications_service,
+                fetch_jobs_func=fetch_jobs_from_all_sources,
+                default_profile=default_profile,
+            )
+        with saved_tab:
+            render_saved_tab(user=user, applications_service=applications_service)
+        with applications_tab:
+            render_applications_tab(user=user, applications_service=applications_service)
+        with resume_builder_tab:
+            render_resume_builder_tab(
+                user=user,
+                resume_builder_service=resume_builder_service,
+                resume_export_service=resume_export_service,
+            )
+
+
+def _build_careers_default_profile(resume_text: str, target_job_description: str) -> dict[str, Any]:
+    clean_resume = str(resume_text or "").strip()
+    clean_target_jd = str(target_job_description or "").strip()
+    return {
+        "resume_text": clean_resume,
+        "summary": clean_resume[:1200],
+        "skills": extract_top_technical_skills(clean_resume, clean_target_jd, limit=12) if clean_resume else [],
+        "target_job_description": clean_target_jd,
+    }
 
 
 

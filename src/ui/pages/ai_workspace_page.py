@@ -794,7 +794,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
         f"""
         <div class="ai-hero">
             <div class="ai-chip">Promo Workspace</div>
-            <h1>ZoSwi Live Workspace</h1>
+            <h1>{ZOSWI_LIVE_WORKSPACE_NAME}</h1>
             <p>Chat in a full Screen assistant experience with realtime streaming responses for ZoSwi.</p>
         </div>
         """,
@@ -802,7 +802,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
     )
 
     if not bool(st.session_state.get("ai_workspace_unlock_ok")):
-        st.info("Unlock ZoSwi Live Workspace with your promo code. This access can be redeemed once per account.")
+        st.info(f"Unlock {ZOSWI_LIVE_WORKSPACE_NAME} with your promo code. This access can be redeemed once per account.")
         with st.container(key="ai_workspace_unlock_shell"):
             if is_mobile:
                 promo_code_text = st.text_input(
@@ -1015,7 +1015,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                 message_col, send_col = st.columns([6.8, 1.2], gap="small")
                 with message_col:
                     message = st.text_input(
-                        "Message ZoSwi Live Workspace",
+                        f"Message {ZOSWI_LIVE_WORKSPACE_NAME}",
                         key="ai_workspace_input",
                         on_change=request_ai_workspace_submit,
                         placeholder="Ask anything...",
@@ -1047,7 +1047,7 @@ def render_ai_workspace_view(user: dict[str, Any]) -> None:
                                 attached_name_preview = f"{attached_name_preview[:61]}..."
                 with row_cols[1]:
                     message = st.text_input(
-                        "Message ZoSwi Live Workspace",
+                        f"Message {ZOSWI_LIVE_WORKSPACE_NAME}",
                         key="ai_workspace_input",
                         on_change=request_ai_workspace_submit,
                         placeholder="Ask anything...",

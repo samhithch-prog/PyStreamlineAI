@@ -9,17 +9,18 @@ import re
 import secrets
 import sqlite3
 import smtplib
+import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from email.utils import parsedate_to_datetime
+from email.utils import formataddr, parsedate_to_datetime
 from functools import lru_cache
 from importlib import import_module
 from typing import Any, Iterable
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 from zoneinfo import ZoneInfo
@@ -34,7 +35,9 @@ from src.controller.app_controller import run_app_runtime
 from src.dto.auth_dto import PasswordResetInputDTO
 from src.dto.runtime_dto import AppRuntimeHandlersDTO, PageConfigDTO
 from src.repository.auth_repository import AuthRepository
+from src.repository.careers_repository import CareersRepository
 from src.repository.immigration_repository import ImmigrationRepository
+from src.repository.resume_builder_repository import ResumeBuilderRepository
 from src.service.auth_service import AuthService, AuthServiceDependencies
 from src.service.immigration_updates_service import ImmigrationUpdatesService
 from src.ui.auth_view import render_password_policy_checklist
@@ -84,7 +87,7 @@ EMAIL_OTP_MAX_ATTEMPTS_DEFAULT = 5
 PASSWORD_RESET_RESEND_SECONDS_DEFAULT = 30
 SIGNUP_REQUEST_TTL_HOURS_DEFAULT = 24
 DEFAULT_APP_TIMEZONE = "America/New_York"
-RUNTIME_BOOTSTRAP_VERSION = 2
+RUNTIME_BOOTSTRAP_VERSION = 4
 MIN_JOB_DESCRIPTION_WORDS = 25
 MIN_JOB_DESCRIPTION_CHARS = 120
 CODING_STAGE_COUNT = 3
@@ -143,7 +146,7 @@ AI_WORKSPACE_ADULT_BLOCK_MESSAGE = (
     "I can’t help with 18+ or explicit sexual content. "
     "I can help with career, coding, interview prep, and professional tasks."
 )
-ZOSWI_LIVE_WORKSPACE_NAME = "ZoSwi Live Workspace"
+ZOSWI_LIVE_WORKSPACE_NAME = "ZoSwi AI Pro"
 ZOSWI_INTERVIEW_APP_URL_DEFAULT = "http://127.0.0.1:3000/interview"
 ZOSWI_INSTANT_BUILDER_URL_DEFAULT = "http://127.0.0.1:3000/instant-builder"
 ZOSWI_BLOCKED_APP_NAME_PATTERN = re.compile(
@@ -290,10 +293,18 @@ ZOSWI_DASHBOARD_FEATURE_FLAGS: dict[str, tuple[str, str]] = {
 ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT_KEY = "ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT"
 ZOSWI_PROD_FULL_ACCESS_ENTITLEMENT_DEFAULT = "Zoswi Entitlement"
 ZOSWI_PRODUCTION_ENV_NAMES = {"prod", "production", "prd", "live"}
-JOB_SEARCH_MAX_RESULTS_DEFAULT = 5
-JOB_SEARCH_MAX_RESULTS_LIMIT = 15
+JOB_SEARCH_MAX_RESULTS_DEFAULT = 60
+JOB_SEARCH_MAX_RESULTS_LIMIT = 200
 JOB_SEARCH_FETCH_CACHE_TTL_SECONDS = 300
+JOB_SEARCH_PROVIDER_MIX_VERSION = 6
+JOB_SEARCH_AGENTIC_MIN_TARGET = 24
+JOB_SEARCH_AGENTIC_MAX_QUERY_EXPANSIONS = 6
+JOB_SEARCH_AGENTIC_RECOVERY_MIN_RATIO = 0.5
 JOB_SEARCH_API_TIMEOUT_SECONDS = 12
+JOB_SEARCH_PROVIDER_RETRY_ATTEMPTS = 2
+JOB_SEARCH_PROVIDER_RETRY_BACKOFF_SECONDS = 0.35
+JOB_SEARCH_PROVIDER_MAX_CONSECUTIVE_FAILURES = 3
+JOB_SEARCH_PROVIDER_COOLDOWN_SECONDS = 300
 JOB_SEARCH_SCORING_MAX_WORKERS = 4
 JOB_SEARCH_MAX_AI_EVALUATIONS = 8
 JOB_SEARCH_MIN_RESUME_MATCH_STRICT = 48
@@ -311,8 +322,513 @@ JOB_SEARCH_POSTED_WITHIN_OPTIONS: list[tuple[str, int]] = [
 JOB_SEARCH_PROVIDER_OPTIONS = [
     "Adzuna",
     "Remotive",
+    "The Muse",
+    "Greenhouse Network",
+    "Lever Network",
+    "Workday Network",
+    "Workable Network",
+    "Ashby Network",
+    "iCIMS Network",
+    "Taleo Network",
+    "SmartRecruiters Network",
+    "Jobvite Network",
+    "Breezy HR Network",
+    "JazzHR Network",
+    "Teamtailor Network",
+    "Oracle Recruiting Cloud Network",
+    "SuccessFactors Network",
     "Jooble",
     "USAJobs",
+    "Official Careers",
+]
+JOB_PROVIDER_HEALTH_ERROR_MARKERS = (
+    "api error",
+    "connection failed",
+    "could not parse",
+    "timed out",
+    "timeout",
+    "service unavailable",
+    "http error",
+    "unauthorized",
+    "forbidden",
+)
+_JOB_PROVIDER_HEALTH_LOCK = threading.Lock()
+_JOB_PROVIDER_HEALTH: dict[str, dict[str, Any]] = {}
+GREENHOUSE_COMPANY_BOARDS: list[tuple[str, str]] = [
+    ("airbnb", "Airbnb"),
+    ("anthropic", "Anthropic"),
+    ("coinbase", "Coinbase"),
+    ("cloudflare", "Cloudflare"),
+    ("datadog", "Datadog"),
+    ("dropbox", "Dropbox"),
+    ("figma", "Figma"),
+    ("mongodb", "MongoDB"),
+    ("okta", "Okta"),
+    ("stripe", "Stripe"),
+    ("duolingo", "Duolingo"),
+    ("reddit", "Reddit"),
+    ("samsara", "Samsara"),
+    ("brex", "Brex"),
+    ("elastic", "Elastic"),
+    ("intercom", "Intercom"),
+    ("gitlab", "GitLab"),
+    ("fivetran", "Fivetran"),
+    ("lyft", "Lyft"),
+    ("affirm", "Affirm"),
+    ("robinhood", "Robinhood"),
+    ("asana", "Asana"),
+    ("twilio", "Twilio"),
+    ("databricks", "Databricks"),
+    ("instacart", "Instacart"),
+    ("pinterest", "Pinterest"),
+    ("flexport", "Flexport"),
+    ("postman", "Postman"),
+    ("nuro", "Nuro"),
+    ("discord", "Discord"),
+    ("carta", "Carta"),
+    ("gusto", "Gusto"),
+    ("monzo", "Monzo"),
+    ("tripadvisor", "Tripadvisor"),
+    ("chime", "Chime"),
+    ("checkr", "Checkr"),
+    ("webflow", "Webflow"),
+    ("block", "Block"),
+    ("udemy", "Udemy"),
+    ("khanacademy", "Khan Academy"),
+    ("coursera", "Coursera"),
+    ("algolia", "Algolia"),
+]
+LEVER_COMPANY_BOARDS: list[tuple[str, str]] = [
+    ("plaid", "Plaid"),
+    ("captivateiq", "CaptivateIQ"),
+    ("clari", "Clari"),
+    ("xero", "Xero"),
+    ("atlassian", "Atlassian"),
+]
+WORKDAY_PUBLIC_JOB_APIS: list[dict[str, str]] = [
+    {
+        "company": "Intel",
+        "endpoint": "https://intel.wd1.myworkdayjobs.com/wday/cxs/intel/External/jobs",
+        "base_url": "https://intel.wd1.myworkdayjobs.com/external",
+    },
+    {
+        "company": "Pfizer",
+        "endpoint": "https://pfizer.wd1.myworkdayjobs.com/wday/cxs/pfizer/PfizerCareers/jobs",
+        "base_url": "https://pfizer.wd1.myworkdayjobs.com/PfizerCareers",
+    },
+    {
+        "company": "CVS Health",
+        "endpoint": "https://cvshealth.wd1.myworkdayjobs.com/wday/cxs/cvshealth/CVS_Health_Careers/jobs",
+        "base_url": "https://cvshealth.wd1.myworkdayjobs.com/CVS_Health_Careers",
+    },
+    {
+        "company": "NVIDIA",
+        "endpoint": "https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/jobs",
+        "base_url": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
+    },
+    {
+        "company": "Adobe",
+        "endpoint": "https://adobe.wd5.myworkdayjobs.com/wday/cxs/adobe/external_experienced/jobs",
+        "base_url": "https://adobe.wd5.myworkdayjobs.com/external_experienced",
+    },
+    {
+        "company": "Boeing",
+        "endpoint": "https://boeing.wd1.myworkdayjobs.com/wday/cxs/boeing/EXTERNAL_CAREERS/jobs",
+        "base_url": "https://boeing.wd1.myworkdayjobs.com/EXTERNAL_CAREERS",
+    },
+    {
+        "company": "Dell",
+        "endpoint": "https://dell.wd1.myworkdayjobs.com/wday/cxs/dell/External/jobs",
+        "base_url": "https://dell.wd1.myworkdayjobs.com/External",
+    },
+    {
+        "company": "GEICO",
+        "endpoint": "https://geico.wd1.myworkdayjobs.com/wday/cxs/geico/External/jobs",
+        "base_url": "https://geico.wd1.myworkdayjobs.com/External",
+    },
+    {
+        "company": "T-Mobile",
+        "endpoint": "https://tmobile.wd1.myworkdayjobs.com/wday/cxs/tmobile/External/jobs",
+        "base_url": "https://tmobile.wd1.myworkdayjobs.com/External",
+    },
+]
+ASHBY_COMPANY_BOARDS: list[tuple[str, str]] = [
+    ("openai", "OpenAI"),
+    ("notion", "Notion"),
+    ("linear", "Linear"),
+    ("ramp", "Ramp"),
+    ("perplexity", "Perplexity"),
+    ("zip", "Zip"),
+    ("quora", "Quora"),
+    ("clerk", "Clerk"),
+    ("sentry", "Sentry"),
+    ("supabase", "Supabase"),
+    ("vercel", "Vercel"),
+    ("airtable", "Airtable"),
+    ("snowflake", "Snowflake"),
+    ("posthog", "PostHog"),
+    ("runway", "Runway"),
+    ("twelve-labs", "Twelve Labs"),
+    ("mercor", "Mercor"),
+]
+WORKABLE_PUBLIC_QUERY_ACCOUNT = "buffer"
+ICIMS_PUBLIC_SEARCH_PORTALS: list[dict[str, str]] = [
+    {
+        "company": "Dollar General",
+        "search_url": "https://retail-dollargeneral.icims.com/jobs/search?ss=1",
+    },
+    {
+        "company": "Dine Brands",
+        "search_url": "https://ddc-dine-careers.icims.com/jobs/search?ss=1",
+    },
+]
+TALEO_PUBLIC_SEARCH_PORTALS: list[dict[str, str]] = [
+    {
+        "company": "Deloitte (Taleo)",
+        "search_url": "https://dttit.taleo.net/careersection/ex/jobsearch.ftl?lang=en",
+    },
+    {
+        "company": "GSK (Taleo)",
+        "search_url": "https://gsk.taleo.net/careersection/2/jobsearch.ftl?lang=en",
+    },
+    {
+        "company": "Experis (Taleo)",
+        "search_url": "https://manpowergroup.taleo.net/careersection/mp_external/jobsearch.ftl?f=ORGANIZATION(58100010947,62100010947,401382850,70100010947)&a=null&multiline=false&ignoreSavedQuery&sasNo=740100010947",
+    },
+]
+SMARTRECRUITERS_COMPANY_SLUGS: list[tuple[str, str]] = [
+    ("visa", "Visa"),
+    ("servicenow", "ServiceNow"),
+    ("uber", "Uber"),
+    ("boschgroup", "Bosch Group"),
+    ("deliveryhero", "Delivery Hero"),
+    ("wise", "Wise"),
+    ("akkodis", "Akkodis"),
+]
+JOBVITE_COMPANY_BOARDS: list[tuple[str, str]] = [
+    ("paloaltonetworks", "Palo Alto Networks"),
+    ("nutanix", "Nutanix"),
+]
+BREEZY_HR_PUBLIC_BOARDS: list[tuple[str, str]] = [
+    ("reveleer", "Reveleer"),
+    ("matroid", "Matroid"),
+    ("propertyradar-inc", "PropertyRadar"),
+    ("onebridge", "Onebridge"),
+    ("accrete-ai", "Accrete AI"),
+    ("avasure", "AvaSure"),
+]
+JAZZHR_PUBLIC_BOARDS: list[tuple[str, str]] = [
+    ("snapsheet", "Snapsheet"),
+    ("firstadvantage", "First Advantage"),
+    ("lightyear", "Lightyear"),
+    ("bizflow", "BizFlow"),
+    ("blackcape", "Black Cape"),
+    ("deka", "DEKA"),
+    ("xenithsolutions", "Xenith Solutions"),
+    ("mocasystems", "MOCA Systems"),
+    ("bluevoyant", "BlueVoyant"),
+    ("iunu", "IUNU"),
+    ("henryscheinone", "Henry Schein One"),
+    ("spideroakmissionsystemsllc", "SpiderOak Mission Systems"),
+]
+TEAMTAILOR_PUBLIC_BOARDS: list[tuple[str, str]] = [
+    ("instabee", "Instabee"),
+    ("paradox-interactive", "Paradox Interactive"),
+    ("storytel", "Storytel"),
+    ("anyfin", "Anyfin"),
+    ("airmee", "Airmee"),
+    ("eletive", "Eletive"),
+    ("estrid", "Estrid"),
+    ("matsmart", "Matsmart"),
+    ("viedoc", "Viedoc"),
+]
+SUCCESSFACTORS_PUBLIC_SEARCH_PORTALS: list[dict[str, str]] = [
+    {
+        "company": "SAP",
+        "search_url": "https://jobs.sap.com/search/",
+        "role_param": "q",
+        "location_param": "locationsearch",
+    },
+    {
+        "company": "Bayer",
+        "search_url": "https://jobs.bayer.com/search/",
+        "role_param": "q",
+        "location_param": "locationsearch",
+    },
+]
+ORACLE_RECRUITING_DEFAULT_PORTALS: list[dict[str, str]] = [
+    {
+        "company": "JPMorgan Chase",
+        "host": "jpmc.fa.oraclecloud.com",
+        "site_number": "CX_1001",
+        "locale": "en",
+    },
+    {
+        "company": "Oracle Recruiting Client",
+        "host": "eeho.fa.us2.oraclecloud.com",
+        "site_number": "CX_1",
+        "locale": "en",
+    },
+    {
+        "company": "Oracle Recruiting Client",
+        "host": "eeih.fa.us2.oraclecloud.com",
+        "site_number": "CX_1",
+        "locale": "en",
+    },
+    {
+        "company": "Oracle Recruiting Client",
+        "host": "hdpc.fa.us2.oraclecloud.com",
+        "site_number": "CX_6",
+        "locale": "en",
+    },
+    {
+        "company": "Oracle Recruiting Client",
+        "host": "estm.fa.em2.oraclecloud.com",
+        "site_number": "CX_1",
+        "locale": "en",
+    },
+    {
+        "company": "Oracle Recruiting Client",
+        "host": "ebxr.fa.us2.oraclecloud.com",
+        "site_number": "CX_1",
+        "locale": "en",
+    },
+]
+JOB_SEARCH_OFFICIAL_COMPANY_PORTALS: list[dict[str, str]] = [
+    {
+        "company": "JPMorgan Chase",
+        "base_url": "https://careers.jpmorgan.com/us/en/search-results",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "Bank of America",
+        "base_url": "https://careers.bankofamerica.com/en-us/job-search",
+        "role_param": "keyword",
+        "location_param": "location",
+    },
+    {
+        "company": "Citi",
+        "base_url": "https://jobs.citi.com/search-jobs",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "Wells Fargo",
+        "base_url": "https://www.wellsfargojobs.com/en/jobs/",
+        "role_param": "search",
+        "location_param": "location",
+    },
+    {
+        "company": "Goldman Sachs",
+        "base_url": "https://higher.gs.com/results",
+        "role_param": "keyword",
+        "location_param": "location",
+    },
+    {
+        "company": "Morgan Stanley",
+        "base_url": "https://www.morganstanley.com/people-opportunities/career-opportunities-search",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "Capital One",
+        "base_url": "https://www.capitalonecareers.com/search-jobs",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "American Express",
+        "base_url": "https://aexp.eightfold.ai/careers",
+        "role_param": "query",
+        "location_param": "location",
+    },
+    {
+        "company": "Deloitte",
+        "base_url": "https://apply.deloitte.com/careers",
+        "role_param": "keyword",
+        "location_param": "location",
+    },
+    {
+        "company": "Accenture",
+        "base_url": "https://www.accenture.com/us-en/careers/jobsearch",
+        "role_param": "jk",
+        "location_param": "lc",
+    },
+    {
+        "company": "EY",
+        "base_url": "https://careers.ey.com/ey/search/",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "PwC",
+        "base_url": "https://jobs.us.pwc.com/search-jobs",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "KPMG",
+        "base_url": "https://www.kpmguscareers.com/job-search",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "IBM",
+        "base_url": "https://careers.ibm.com/search",
+        "role_param": "q",
+        "location_param": "location",
+    },
+    {
+        "company": "Oracle",
+        "base_url": "https://careers.oracle.com/jobs",
+        "role_param": "keyword",
+        "location_param": "location",
+    },
+    {
+        "company": "Microsoft",
+        "base_url": "https://jobs.careers.microsoft.com/global/en/search",
+        "role_param": "q",
+        "location_param": "l",
+    },
+    {
+        "company": "Google",
+        "base_url": "https://www.google.com/about/careers/applications/jobs/results/",
+        "role_param": "q",
+        "location_param": "location",
+    },
+    {
+        "company": "Amazon",
+        "base_url": "https://www.amazon.jobs/en/search",
+        "role_param": "base_query",
+        "location_param": "loc_query",
+    },
+    {
+        "company": "Meta",
+        "base_url": "https://www.metacareers.com/jobs/",
+        "role_param": "q",
+        "location_param": "location",
+    },
+    {
+        "company": "Apple",
+        "base_url": "https://jobs.apple.com/en-us/search",
+        "role_param": "search",
+        "location_param": "location",
+    },
+    {
+        "company": "Netflix",
+        "base_url": "https://jobs.netflix.com/search",
+        "role_param": "query",
+        "location_param": "location",
+    },
+    {
+        "company": "Tesla",
+        "base_url": "https://www.tesla.com/careers/search/",
+        "role_param": "query",
+        "location_param": "site",
+    },
+    {
+        "company": "NVIDIA",
+        "base_url": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
+        "role_param": "q",
+        "location_param": "location",
+    },
+    {
+        "company": "Adobe",
+        "base_url": "https://careers.adobe.com/us/en/search-results",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "Salesforce",
+        "base_url": "https://careers.salesforce.com/en/jobs/",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "Stripe",
+        "base_url": "https://stripe.com/jobs/search",
+        "role_param": "query",
+        "location_param": "location",
+    },
+    {
+        "company": "Airbnb",
+        "base_url": "https://careers.airbnb.com/positions/",
+        "role_param": "q",
+        "location_param": "location",
+    },
+    {
+        "company": "Uber",
+        "base_url": "https://www.uber.com/global/en/careers/list/",
+        "role_param": "query",
+        "location_param": "location",
+    },
+    {
+        "company": "Lyft",
+        "base_url": "https://www.lyft.com/careers/jobs",
+        "role_param": "query",
+        "location_param": "location",
+    },
+    {
+        "company": "Coinbase",
+        "base_url": "https://www.coinbase.com/careers/positions",
+        "role_param": "search",
+        "location_param": "location",
+    },
+    {
+        "company": "Databricks",
+        "base_url": "https://www.databricks.com/company/careers/open-positions",
+        "role_param": "search",
+        "location_param": "location",
+    },
+    {
+        "company": "Snowflake",
+        "base_url": "https://careers.snowflake.com/us/en/search-results",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "Notion",
+        "base_url": "https://www.notion.com/careers",
+        "role_param": "search",
+        "location_param": "location",
+    },
+    {
+        "company": "Figma",
+        "base_url": "https://www.figma.com/careers",
+        "role_param": "search",
+        "location_param": "location",
+    },
+    {
+        "company": "GEICO",
+        "base_url": "https://careers.geico.com/us/en/search-results",
+        "role_param": "keywords",
+        "location_param": "location",
+    },
+    {
+        "company": "T-Mobile",
+        "base_url": "https://careers.t-mobile.com/jobs",
+        "role_param": "search",
+        "location_param": "location",
+    },
+    {
+        "company": "Akkodis",
+        "base_url": "https://jobs.smartrecruiters.com/akkodis",
+        "role_param": "search",
+        "location_param": "location",
+    },
+    {
+        "company": "Experis",
+        "base_url": "https://www.experis.com/en/search",
+        "role_param": "searchKeyword",
+        "location_param": "location",
+    },
+    {
+        "company": "Cognizant",
+        "base_url": "https://careers.cognizant.com/global-en/jobs/",
+        "role_param": "keyword",
+        "location_param": "location",
+    },
 ]
 JOB_SEARCH_VISA_STATUSES = [
     "US Citizen / Green Card",
@@ -1248,7 +1764,7 @@ def build_dashboard_module_status_summary() -> str:
     flags = get_effective_dashboard_feature_flags(st.session_state.get("user"))
     labels = (
         ("Careers", "careers"),
-        ("Live Workspace", "ai_workspace"),
+        (ZOSWI_LIVE_WORKSPACE_NAME, "ai_workspace"),
         ("Immigration Updates", "immigration_updates"),
         ("AI Coding Room", "coding_room"),
         ("Live AI Interview", "live_interview"),
@@ -1787,6 +2303,16 @@ def init_db() -> None:
         )
         """
     )
+    # Careers module tables are managed in repository to keep schema centralized.
+    for statement in CareersRepository.get_table_creation_sql(conn.backend):
+        conn.execute(statement)
+    for statement in CareersRepository.get_index_creation_sql():
+        conn.execute(statement)
+    # Resume builder tables are managed in repository to keep schema centralized.
+    for statement in ResumeBuilderRepository.get_table_creation_sql(conn.backend):
+        conn.execute(statement)
+    for statement in ResumeBuilderRepository.get_index_creation_sql():
+        conn.execute(statement)
     music_setting_now_iso = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """
@@ -2143,6 +2669,18 @@ def get_smtp_settings() -> dict[str, Any]:
     }
 
 
+def get_smtp_sender_display_name() -> str:
+    configured = get_config_value("SMTP_FROM_NAME", "smtp", "from_name", "ZoSwi Magic")
+    cleaned = re.sub(r"\s+", " ", str(configured or "").strip())
+    return cleaned[:120] or "ZoSwi Magic"
+
+
+def build_smtp_from_header(smtp_cfg: dict[str, Any]) -> str:
+    sender_email = str(smtp_cfg.get("from_email", "") or "").strip()
+    sender_name = get_smtp_sender_display_name()
+    return formataddr((sender_name, sender_email)) if sender_email else sender_name
+
+
 def can_send_email_otp() -> tuple[bool, str]:
     pepper = get_email_otp_pepper()
     if not pepper:
@@ -2175,13 +2713,13 @@ def send_email_otp_message(recipient_email: str, otp_code: str, ttl_minutes: int
         return False, "Email verification sender is not configured."
 
     message = EmailMessage()
-    message["Subject"] = "Your PyStreamlineAI verification code"
-    message["From"] = smtp_cfg["from_email"]
+    message["Subject"] = "ZoSwi Magic: Your verification code"
+    message["From"] = build_smtp_from_header(smtp_cfg)
     message["To"] = recipient_email
     message.set_content(
         "\n".join(
             [
-                "Use this one-time verification code for PyStreamlineAI:",
+                "ZoSwi Magic: Use this one-time verification code:",
                 "",
                 otp_code,
                 "",
@@ -2225,7 +2763,7 @@ def send_support_verification_code_message(
 
     message = EmailMessage()
     message["Subject"] = "Your ZoSwi support verification code"
-    message["From"] = smtp_cfg["from_email"]
+    message["From"] = build_smtp_from_header(smtp_cfg)
     message["To"] = str(recipient_email or "").strip().lower()
     message.set_content(
         "\n".join(
@@ -2277,7 +2815,7 @@ def send_support_contact_message(
 
     message = EmailMessage()
     message["Subject"] = f"ZoSwi Support: {cleaned_subject[:120]}"
-    message["From"] = smtp_cfg["from_email"]
+    message["From"] = build_smtp_from_header(smtp_cfg)
     message["To"] = inbox_email
     message["Reply-To"] = cleaned_email
     message.set_content(
@@ -2680,13 +3218,20 @@ def clear_pending_email_verification() -> None:
 
 def normalize_auth_view(raw_value: str) -> str:
     cleaned = str(raw_value or "").strip().lower()
+    if cleaned in {"zoswi magic", "magic", "magic login", "magic code"}:
+        return "ZoSwi Magic"
     if cleaned in {"create account", "create_account", "signup", "sign up", "register"}:
         return "Create Account"
     return "Login"
 
 
 def auth_view_to_query_value(auth_view: str) -> str:
-    return "signup" if normalize_auth_view(auth_view) == "Create Account" else "login"
+    normalized = normalize_auth_view(auth_view)
+    if normalized == "Create Account":
+        return "signup"
+    if normalized == "ZoSwi Magic":
+        return "magic"
+    return "login"
 
 
 def read_auth_view_from_query_params() -> str:
@@ -3459,6 +4004,269 @@ def get_user_by_email(email: str) -> dict[str, Any] | None:
     return enrich_user_with_entitlements(user)
 
 
+def parse_user_profile_data(profile_data_raw: Any) -> dict[str, Any]:
+    raw_text = str(profile_data_raw or "").strip()
+    if not raw_text:
+        return {}
+    try:
+        payload = json.loads(raw_text)
+    except Exception:
+        return {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def serialize_user_profile_data(profile_data: dict[str, Any]) -> str | None:
+    if not isinstance(profile_data, dict):
+        return None
+    compact = {str(key): value for key, value in profile_data.items() if str(key).strip()}
+    if not compact:
+        return None
+    try:
+        return json.dumps(compact, separators=(",", ":"))
+    except Exception:
+        return None
+
+
+def get_user_auth_record_by_email(email: str) -> dict[str, Any] | None:
+    cleaned_email = str(email or "").strip().lower()
+    if not cleaned_email:
+        return None
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT
+                id,
+                full_name,
+                email,
+                role,
+                years_experience,
+                created_at,
+                email_verified_at,
+                password_hash,
+                profile_data,
+                onboarding_completed_at
+            FROM users
+            WHERE email = ?
+            LIMIT 1
+            """,
+            (cleaned_email,),
+        ).fetchone()
+        if row is None:
+            return None
+        return enrich_user_with_entitlements(dict(row))
+    finally:
+        conn.close()
+
+
+def get_user_auth_record_by_id(user_id: int) -> dict[str, Any] | None:
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0:
+        return None
+    conn = db_connect()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT
+                id,
+                full_name,
+                email,
+                role,
+                years_experience,
+                created_at,
+                email_verified_at,
+                password_hash,
+                profile_data,
+                onboarding_completed_at
+            FROM users
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (safe_user_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return enrich_user_with_entitlements(dict(row))
+    finally:
+        conn.close()
+
+
+def build_magic_login_full_name(email: str) -> str:
+    local_part = str(email or "").strip().split("@", 1)[0]
+    tokens = [token for token in re.split(r"[\W_]+", local_part) if token]
+    if not tokens:
+        return "ZoSwi Candidate"
+    return " ".join(token.capitalize() for token in tokens)[:160]
+
+
+def get_or_create_magic_login_user(email: str) -> tuple[dict[str, Any] | None, str]:
+    cleaned_email = str(email or "").strip().lower()
+    if not is_valid_email_address(cleaned_email):
+        return None, "Enter a valid email address."
+
+    existing = get_user_auth_record_by_email(cleaned_email)
+    if existing is not None:
+        return existing, ""
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    random_password = secrets.token_urlsafe(24)
+    profile_payload = serialize_user_profile_data({"magic_onboarding_required": True})
+    conn = db_connect()
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO users (
+                full_name,
+                email,
+                password_hash,
+                role,
+                years_experience,
+                profile_data,
+                account_status,
+                updated_at,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                build_magic_login_full_name(cleaned_email),
+                cleaned_email,
+                hash_password(random_password),
+                "Candidate",
+                "",
+                profile_payload,
+                "active",
+                now_iso,
+                now_iso,
+            ),
+        )
+        user_id = int(cur.lastrowid or 0)
+        conn.commit()
+    except Exception as ex:
+        if is_unique_violation(ex):
+            existing = get_user_auth_record_by_email(cleaned_email)
+            if existing is not None:
+                return existing, ""
+        return None, "Unable to start ZoSwi Magic right now. Please try again."
+    finally:
+        conn.close()
+
+    if user_id <= 0:
+        return None, "Unable to start ZoSwi Magic right now. Please try again."
+    created = get_user_auth_record_by_id(user_id)
+    if created is None:
+        return None, "Unable to start ZoSwi Magic right now. Please try again."
+    return created, ""
+
+
+def send_magic_login_otp(email: str) -> tuple[bool, str, int, str]:
+    cleaned_email = str(email or "").strip().lower()
+    if not is_valid_email_address(cleaned_email):
+        return False, "Enter a valid email address.", 0, cleaned_email
+
+    config_ok, config_msg = can_send_email_otp()
+    if not config_ok:
+        return False, config_msg, 0, cleaned_email
+
+    user, user_msg = get_or_create_magic_login_user(cleaned_email)
+    if user is None:
+        return False, user_msg or "Unable to start ZoSwi Magic right now. Please try again.", 0, cleaned_email
+
+    user_id = int(user.get("id") or 0)
+    if user_id <= 0:
+        return False, "Magic login target is invalid.", 0, cleaned_email
+
+    sent, send_msg = send_email_verification_otp(user_id, cleaned_email)
+    return sent, send_msg, user_id, cleaned_email
+
+
+def prepare_magic_login_user_for_session(user_id: int) -> dict[str, Any] | None:
+    safe_user_id = int(user_id or 0)
+    if safe_user_id <= 0:
+        return None
+
+    existing_user = get_user_auth_record_by_id(safe_user_id)
+    if existing_user is None:
+        return None
+
+    profile_payload = parse_user_profile_data(existing_user.get("profile_data"))
+    profile_payload["magic_role_choice"] = "candidate"
+    profile_payload["magic_signin_with_code"] = True
+    profile_payload["magic_onboarding_required"] = False
+    serialized_profile = serialize_user_profile_data(profile_payload)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    conn = db_connect()
+    try:
+        conn.execute(
+            """
+            UPDATE users
+            SET
+                role = ?,
+                profile_data = ?,
+                onboarding_completed_at = COALESCE(onboarding_completed_at, ?),
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "Candidate",
+                serialized_profile,
+                now_iso,
+                now_iso,
+                safe_user_id,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+    return get_user_auth_record_by_id(safe_user_id)
+
+
+def complete_local_auth_login_session(
+    user: dict[str, Any] | None,
+    login_method: str = "password",
+    login_provider: str = "local",
+) -> bool:
+    if not isinstance(user, dict):
+        return False
+    user_id = int(user.get("id") or 0)
+    if user_id <= 0:
+        return False
+
+    auth_token = create_auth_session(user_id)
+    record_user_login_event(user_id, login_method, login_provider)
+    clear_pending_email_verification()
+    clear_magic_login_flow_state()
+    st.session_state.user = user
+    full_name = str(user.get("full_name", "")).strip()
+    st.session_state.bot_user_email = None
+    st.session_state.active_chat_id = None
+    st.session_state.bot_open = should_auto_open_bot_after_auth()
+    st.session_state.bot_messages = default_bot_messages(full_name)
+    st.session_state.bot_pending_prompt = None
+    st.session_state.zoswi_submit = False
+    st.session_state.clear_zoswi_input = True
+    st.session_state.full_chat_submit = False
+    st.session_state.clear_full_chat_input = True
+    st.session_state.ai_workspace_media_bytes = b""
+    st.session_state.ai_workspace_media_mime = ""
+    st.session_state.ai_workspace_media_file_name = ""
+    st.session_state.ai_workspace_media_label = ""
+    st.session_state.dashboard_view = "home"
+    st.session_state.user_menu_open = False
+    st.session_state.auth_session_token = auth_token or None
+    if auth_token:
+        queue_set_auth_cookie(auth_token)
+    return True
+
+
 def parse_wait_seconds_from_message(message: str) -> int:
     message_text = str(message or "").strip().lower()
     match = re.search(r"wait\s+(\d+)\s+seconds", message_text)
@@ -4180,6 +4988,159 @@ def strip_html_tags(raw_text: str) -> str:
     return text
 
 
+def build_job_role_query_tokens(role_query: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", str(role_query or "").strip().lower())
+    if not cleaned:
+        return []
+    raw_tokens = re.findall(r"[a-z0-9][a-z0-9+.#/_-]*", cleaned)
+    stop_tokens = {
+        "a",
+        "an",
+        "and",
+        "or",
+        "the",
+        "for",
+        "to",
+        "with",
+        "of",
+        "in",
+        "on",
+        "at",
+        "by",
+        "job",
+        "jobs",
+        "role",
+        "roles",
+        "position",
+        "positions",
+    }
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in raw_tokens:
+        compact = token.strip().lower()
+        if not compact or compact in stop_tokens:
+            continue
+        if len(compact) <= 1:
+            continue
+        if compact in seen:
+            continue
+        seen.add(compact)
+        tokens.append(compact)
+    if tokens:
+        return tokens
+    return [cleaned]
+
+
+def _expand_role_match_tokens(tokens: list[str]) -> list[str]:
+    if not tokens:
+        return []
+    phrase_text = " ".join(tokens)
+    phrase_synonyms: dict[str, tuple[str, ...]] = {
+        "software engineer": ("software developer", "backend engineer", "full stack engineer"),
+        "backend engineer": ("backend developer", "api engineer", "platform engineer"),
+        "frontend engineer": ("frontend developer", "ui engineer", "web engineer"),
+        "full stack engineer": ("full stack developer", "software engineer"),
+        "data engineer": ("etl engineer", "pipeline engineer", "analytics engineer"),
+        "data scientist": ("machine learning engineer", "ml engineer", "ai engineer"),
+        "devops engineer": ("sre", "site reliability engineer", "platform engineer"),
+        "product manager": ("technical product manager", "product owner"),
+        "business analyst": ("data analyst", "systems analyst"),
+        "java developer": ("java engineer", "backend engineer", "spring boot developer"),
+        "python developer": ("python engineer", "backend engineer"),
+    }
+    token_synonyms: dict[str, tuple[str, ...]] = {
+        "java": ("spring", "spring boot", "j2ee", "backend"),
+        "python": ("django", "flask", "fastapi", "backend"),
+        "backend": ("api", "microservices", "server-side", "platform"),
+        "frontend": ("front-end", "ui", "react", "angular", "web"),
+        "fullstack": ("full-stack", "backend", "frontend"),
+        "software": ("developer", "engineer", "programmer"),
+        "developer": ("engineer", "software"),
+        "engineer": ("developer", "software"),
+        "data": ("analytics", "sql", "pipeline"),
+        "devops": ("sre", "kubernetes", "terraform", "cloud"),
+        "cloud": ("aws", "azure", "gcp"),
+        "security": ("cybersecurity", "infosec"),
+    }
+
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str) -> None:
+        normalized = re.sub(r"\s+", " ", str(value or "").strip().lower())
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        expanded.append(normalized)
+
+    for token in tokens:
+        _add(token)
+
+    for phrase, related in phrase_synonyms.items():
+        if phrase in phrase_text:
+            for item in related:
+                _add(item)
+                for sub in build_job_role_query_tokens(item):
+                    _add(sub)
+
+    for token in tokens:
+        for item in token_synonyms.get(token, ()):
+            _add(item)
+            for sub in build_job_role_query_tokens(item):
+                _add(sub)
+
+    return expanded
+
+
+def job_matches_role_query(role_query: str, *fields: str) -> bool:
+    cleaned_query = re.sub(r"\s+", " ", str(role_query or "").strip().lower())
+    if not cleaned_query:
+        return True
+    corpus = " ".join(str(field or "") for field in fields).strip().lower()
+    if not corpus:
+        return False
+    if cleaned_query in corpus:
+        return True
+
+    tokens = build_job_role_query_tokens(cleaned_query)
+    if not tokens:
+        return True
+    expanded_tokens = _expand_role_match_tokens(tokens)
+    if not expanded_tokens:
+        expanded_tokens = tokens
+
+    primary_hits = sum(1 for token in tokens if token in corpus)
+    expanded_hits = sum(1 for token in expanded_tokens if token in corpus)
+    weighted_score = float(primary_hits) + (0.45 * float(max(0, expanded_hits - primary_hits)))
+
+    if len(tokens) <= 2:
+        required_score = 1.0
+    elif len(tokens) <= 4:
+        required_score = 1.6
+    else:
+        required_score = 2.2
+    return weighted_score >= required_score
+
+
+def job_matches_location_filter(preferred_location: str, location_text: str) -> bool:
+    preferred = re.sub(r"\s+", " ", str(preferred_location or "").strip().lower())
+    if not preferred:
+        return True
+    location = re.sub(r"\s+", " ", str(location_text or "").strip().lower())
+    if not location:
+        return False
+    if preferred in location:
+        return True
+
+    location_parts = [part.strip() for part in re.split(r"[,/|()-]", preferred) if part.strip()]
+    for part in location_parts:
+        if len(part) >= 3 and part in location:
+            return True
+
+    remote_tokens = ("remote", "anywhere", "work from home", "worldwide")
+    return any(token in location for token in remote_tokens)
+
+
 def get_posted_within_label(days: int) -> str:
     for label, value in JOB_SEARCH_POSTED_WITHIN_OPTIONS:
         if int(value) == int(days or 0):
@@ -4191,6 +5152,31 @@ def parse_job_posted_datetime(raw_value: Any) -> datetime | None:
     text = str(raw_value or "").strip()
     if not text:
         return None
+    lowered = text.lower()
+    now_utc = datetime.now(timezone.utc)
+    if lowered in {"now", "just now", "today", "posted today"}:
+        return now_utc
+    if "yesterday" in lowered:
+        return now_utc - timedelta(days=1)
+    relative_match = re.search(
+        r"(?i)(\d+)\s*\+?\s*(minute|min|hour|hr|day|week|month|year)s?\s+ago",
+        lowered,
+    )
+    if relative_match:
+        amount = max(0, int(relative_match.group(1) or 0))
+        unit = str(relative_match.group(2) or "").lower()
+        if unit in {"minute", "min"}:
+            return now_utc - timedelta(minutes=amount)
+        if unit in {"hour", "hr"}:
+            return now_utc - timedelta(hours=amount)
+        if unit == "day":
+            return now_utc - timedelta(days=amount)
+        if unit == "week":
+            return now_utc - timedelta(weeks=amount)
+        if unit == "month":
+            return now_utc - timedelta(days=amount * 30)
+        if unit == "year":
+            return now_utc - timedelta(days=amount * 365)
     if text.endswith("Z"):
         text = f"{text[:-1]}+00:00"
     parsed: datetime | None = None
@@ -4268,11 +5254,8 @@ def fetch_remotive_jobs(
         return [], "Enter a target role before searching jobs."
 
     limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
-    params = {
-        "search": safe_role,
-        "limit": str(limit),
-    }
-    request_url = f"https://remotive.com/api/remote-jobs?{urlencode(params)}"
+    # Remotive search parameter behavior can return sparse data; fetch live feed and filter locally.
+    request_url = "https://remotive.com/api/remote-jobs"
     request = Request(
         request_url,
         headers={
@@ -4294,7 +5277,7 @@ def fetch_remotive_jobs(
     if not isinstance(items, list):
         items = []
 
-    preferred = str(preferred_location or "").strip().lower()
+    preferred = str(preferred_location or "").strip()
     jobs: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, dict):
@@ -4303,13 +5286,16 @@ def fetch_remotive_jobs(
         if not title:
             continue
         location = str(item.get("candidate_required_location", "")).strip() or "Remote"
-        if preferred and preferred not in location.lower() and "remote" not in location.lower():
-            continue
         description = strip_html_tags(str(item.get("description", "")))
+        company_name = str(item.get("company_name", "")).strip() or "Unknown company"
+        if not job_matches_role_query(safe_role, title, description, company_name):
+            continue
+        if not job_matches_location_filter(preferred, location):
+            continue
         jobs.append(
             {
                 "title": title,
-                "company": str(item.get("company_name", "")).strip() or "Unknown company",
+                "company": company_name,
                 "location": location,
                 "description": description,
                 "apply_url": str(item.get("url", "")).strip(),
@@ -4323,6 +5309,108 @@ def fetch_remotive_jobs(
             break
     if not jobs:
         return [], "No Remotive jobs matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_themuse_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching jobs."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+
+    preferred = str(preferred_location or "").strip()
+    jobs: list[dict[str, Any]] = []
+    page = 1
+    max_pages = 4
+    while page <= max_pages and len(jobs) < limit:
+        request_url = f"https://www.themuse.com/api/public/jobs?page={page}&descending=true"
+        request = Request(
+            request_url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "PyStreamlineAI/1.0",
+            },
+        )
+        try:
+            with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        except HTTPError as ex:
+            return [], f"The Muse API error ({int(ex.code)})."
+        except URLError:
+            return [], "The Muse API connection failed. Check network access and retry."
+        except Exception:
+            return [], "Could not parse The Muse API response."
+
+        raw_items = payload.get("results", []) if isinstance(payload, dict) else []
+        if not isinstance(raw_items, list):
+            raw_items = []
+        if not raw_items:
+            break
+
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("name", "")).strip()
+            if not title:
+                continue
+            company_obj = item.get("company", {}) or {}
+            company_name = str(company_obj.get("name", "")).strip() or "Unknown company"
+            raw_locations = item.get("locations", [])
+            location_parts: list[str] = []
+            if isinstance(raw_locations, list):
+                for loc_obj in raw_locations:
+                    if isinstance(loc_obj, dict):
+                        loc_name = str(loc_obj.get("name", "")).strip()
+                        if loc_name:
+                            location_parts.append(loc_name)
+            location_text = ", ".join(location_parts[:3]).strip() or "Location not listed"
+            description = strip_html_tags(str(item.get("contents", "")).strip())
+            if not job_matches_role_query(safe_role, title, description, company_name):
+                continue
+            if not job_matches_location_filter(preferred, location_text):
+                continue
+
+            refs_obj = item.get("refs", {}) or {}
+            apply_url = ""
+            if isinstance(refs_obj, dict):
+                apply_url = str(refs_obj.get("landing_page", "")).strip()
+
+            raw_levels = item.get("levels", [])
+            level_parts: list[str] = []
+            if isinstance(raw_levels, list):
+                for level_obj in raw_levels:
+                    if isinstance(level_obj, dict):
+                        level_name = str(level_obj.get("name", "")).strip()
+                        if level_name:
+                            level_parts.append(level_name)
+            levels_text = ", ".join(level_parts[:3])[:80]
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": description,
+                    "apply_url": apply_url,
+                    "source": "The Muse",
+                    "employment_type": levels_text,
+                    "contract_type": levels_text,
+                    "posted_at": normalize_posted_at(item.get("publication_date")),
+                }
+            )
+            if len(jobs) >= limit:
+                break
+
+        page_count_value = int(payload.get("page_count", page) or page)
+        if page >= page_count_value:
+            break
+        page += 1
+
+    if not jobs:
+        return [], "No The Muse jobs matched the current role/location filter."
     return jobs, ""
 
 
@@ -4510,6 +5598,3921 @@ def fetch_jooble_jobs(
     return jobs, ""
 
 
+def _decode_http_body(raw_body: Any) -> str:
+    if isinstance(raw_body, bytes):
+        return raw_body.decode("utf-8", errors="replace")
+    return str(raw_body or "")
+
+
+def _location_matches_preference(preferred_location: str, job_location: str) -> bool:
+    wanted = " ".join(str(preferred_location or "").strip().lower().split())
+    if not wanted:
+        return True
+    alias_map: dict[str, str] = {
+        "usa": "united states of america",
+        "us": "united states of america",
+        "u.s.": "united states of america",
+        "united states": "united states of america",
+        "uk": "united kingdom",
+        "u.k.": "united kingdom",
+        "uae": "united arab emirates",
+        "u.a.e.": "united arab emirates",
+    }
+    normalized_wanted = alias_map.get(wanted, wanted)
+    location_text = " ".join(str(job_location or "").strip().lower().split())
+    unknown_location_markers = {
+        "",
+        "location not listed",
+        "location unavailable",
+        "unknown",
+        "n/a",
+        "not specified",
+    }
+    if location_text in unknown_location_markers:
+        location_text = ""
+    if not location_text:
+        return normalized_wanted in {"united states of america", "remote", "global", "worldwide", "any"}
+
+    country_markers: dict[str, tuple[str, ...]] = {
+        "united states of america": ("united states", "u.s.", "usa", " us ", "remote-us", "remote usa"),
+        "canada": ("canada", "ca"),
+        "united kingdom": ("united kingdom", " uk ", "u.k.", "england", "scotland", "wales"),
+        "germany": ("germany",),
+        "netherlands": ("netherlands",),
+        "ireland": ("ireland",),
+        "india": ("india",),
+        "singapore": ("singapore",),
+        "australia": ("australia",),
+        "united arab emirates": ("united arab emirates", "uae", "u.a.e.", "dubai", "abu dhabi"),
+        "switzerland": ("switzerland",),
+        "sweden": ("sweden",),
+        "poland": ("poland",),
+    }
+
+    def _marker_matches_location(marker: str, location_value: str) -> bool:
+        token = str(marker or "").strip().lower()
+        if not token:
+            return False
+        haystack = str(location_value or "").strip().lower()
+        if not haystack:
+            return False
+        if token in {"ca", "us", "uk", "uae"}:
+            return bool(re.search(rf"\b{re.escape(token)}\b", haystack))
+        if len(token) <= 3 and token.isalpha():
+            return bool(re.search(rf"\b{re.escape(token)}\b", haystack))
+        return token in haystack
+
+    if normalized_wanted in country_markers:
+        markers = country_markers[normalized_wanted]
+        if any(_marker_matches_location(marker, location_text) for marker in markers):
+            return True
+        if normalized_wanted == "united states of america":
+            non_us_country_markers = [
+                marker
+                for country, marker_set in country_markers.items()
+                if country != "united states of america"
+                for marker in marker_set
+            ]
+            if any(_marker_matches_location(marker, location_text) for marker in non_us_country_markers):
+                return False
+            broader_non_us_markers = (
+                "stockholm",
+                "sweden",
+                "europe",
+                "germany",
+                "netherlands",
+                "ireland",
+                "india",
+                "singapore",
+                "australia",
+                "switzerland",
+                "poland",
+                "denmark",
+                "norway",
+                "finland",
+                "france",
+                "spain",
+                "italy",
+                "portugal",
+                "japan",
+                "china",
+                "korea",
+                "mexico",
+                "brazil",
+                "argentina",
+                "chile",
+                "south africa",
+                "new zealand",
+                "emea",
+                "apac",
+                "latam",
+                "eu only",
+                "eu-only",
+            )
+            if any(marker in location_text for marker in broader_non_us_markers):
+                return False
+            state_abbr_match = re.search(
+                r"\b(al|ak|az|ar|ca|co|ct|dc|de|fl|ga|hi|ia|id|il|in|ks|ky|la|ma|md|me|mi|mn|mo|ms|mt|nc|nd|ne|nh|nj|nm|nv|ny|oh|ok|or|pa|ri|sc|sd|tn|tx|ut|va|vt|wa|wi|wv|wy)\b",
+                location_text,
+            )
+            state_name_match = re.search(
+                r"\b(california|new york|texas|florida|washington|massachusetts|virginia|illinois|new jersey|north carolina|georgia|pennsylvania|colorado|arizona|ohio|michigan|maryland)\b",
+                location_text,
+            )
+            if state_abbr_match or state_name_match or "remote" in location_text:
+                return True
+            us_markers = ("united states", "united states of america", "usa", "u.s.", " us ")
+            if any(_marker_matches_location(marker, location_text) for marker in us_markers):
+                return True
+            # Do not treat explicit unknown geographies as US by default.
+            return False
+        return False
+
+    if "remote" in normalized_wanted and "remote" in location_text:
+        return True
+    if normalized_wanted in location_text:
+        return True
+    wanted_tokens = [token for token in re.split(r"[,\s/|;-]+", normalized_wanted) if token]
+    if not wanted_tokens:
+        return True
+    token_hits = sum(1 for token in wanted_tokens if token in location_text)
+    return token_hits >= min(2, len(wanted_tokens))
+
+
+def _looks_like_direct_job_posting_url(job_url: str) -> bool:
+    cleaned_url = str(job_url or "").strip()
+    if not cleaned_url:
+        return False
+    try:
+        parsed = urlsplit(cleaned_url)
+    except Exception:
+        return False
+    scheme = str(parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        return False
+
+    host = str(parsed.netloc or "").strip().lower()
+    path = str(parsed.path or "").strip().lower()
+    query = str(parsed.query or "").strip().lower()
+    combined = f"{path}?{query}" if query else path
+    if path.rstrip("/").endswith("/404") or "/404/" in path:
+        return False
+
+    # ATS host patterns where job pages do not include /job or /jobs in the path.
+    if "jobs.lever.co" in host:
+        path_segments = [segment for segment in path.split("/") if segment]
+        if len(path_segments) >= 2:
+            return True
+    if "jobs.smartrecruiters.com" in host:
+        path_segments = [segment for segment in path.split("/") if segment]
+        if len(path_segments) >= 2:
+            return True
+    if host.endswith(".breezy.hr") and path.startswith("/p/"):
+        path_segments = [segment for segment in path.split("/") if segment]
+        if len(path_segments) >= 2:
+            return True
+    if "applytojob.com" in host and path.startswith("/apply/"):
+        path_segments = [segment for segment in path.split("/") if segment]
+        if len(path_segments) >= 2:
+            return True
+    if "jobs.workable.com" in host and "/view/" in path:
+        return True
+    if "apply.workable.com" in host and ("/j/" in path or "/job/" in path):
+        return True
+    if "jobs.ashbyhq.com" in host:
+        path_segments = [segment for segment in path.split("/") if segment]
+        if len(path_segments) >= 2:
+            return True
+
+    generic_landing_markers = (
+        "/search",
+        "/search-jobs",
+        "/job-search",
+        "/search-results",
+        "/jobs/search",
+        "/careers/search",
+        "/careers/results",
+        "/jobs/results",
+        "/services/rss/",
+        "/rss/",
+    )
+    if any(marker in path for marker in generic_landing_markers):
+        return False
+
+    strong_path_tokens = (
+        "/job/",
+        "/jobs/",
+        "/job-detail/",
+        "/jobdetail",
+        "/requisition",
+        "/requisitions/",
+        "/vacancy/",
+        "/opening/",
+        "/opportunity/",
+        "/positions/",
+        "/viewjob",
+    )
+    if any(token in path for token in strong_path_tokens):
+        return True
+
+    strong_query_tokens = (
+        "jobid=",
+        "job_id=",
+        "gh_jid=",
+        "requisitionid=",
+        "requisition_id=",
+        "reqid=",
+        "postingid=",
+        "vacancyid=",
+        "career_job_req_id=",
+        "jobreqid=",
+    )
+    if any(token in query for token in strong_query_tokens):
+        return True
+
+    # Fallback acceptance for role pages that are clearly not generic search pages.
+    path_segments = [segment for segment in path.split("/") if segment]
+    generic_tokens = ("search", "results", "jobs", "careers", "career")
+    if len(path_segments) >= 2 and any(token in combined for token in generic_tokens):
+        return True
+
+    return False
+
+
+def _extract_jpmc_requisition_id(job_url: str) -> str:
+    cleaned = str(job_url or "").strip()
+    if not cleaned:
+        return ""
+    match = re.search(
+        r"/(?:requisitions|job|search/requisition)/([0-9]{6,12})(?:[/?#]|$)",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return str(match.group(1)).strip() if match else ""
+
+
+@lru_cache(maxsize=1024)
+def _is_jpmc_requisition_live_cached(requisition_id: str, cache_bucket: int) -> bool:
+    _ = int(cache_bucket or 0)
+    req_id = str(requisition_id or "").strip()
+    if not req_id:
+        return False
+    finder_value = f"findReqs;siteNumber=CX_1001,keyword={req_id},limit=5,offset=0"
+    request_url = (
+        "https://jpmc.fa.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitions?"
+        + urlencode(
+            {
+                "onlyData": "true",
+                "expand": "all",
+                "finder": finder_value,
+            }
+        )
+    )
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "PyStreamlineAI/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=max(4, min(8, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+            payload = json.loads(_decode_http_body(response.read()))
+    except Exception:
+        return False
+
+    items = payload.get("items", []) if isinstance(payload, dict) else []
+    if not isinstance(items, list):
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        reqs = item.get("requisitionList", [])
+        if not isinstance(reqs, list):
+            continue
+        for req in reqs:
+            if not isinstance(req, dict):
+                continue
+            if str(req.get("Id", "")).strip() == req_id:
+                return True
+    return False
+
+
+@lru_cache(maxsize=4096)
+def _is_live_job_posting_url_cached(job_url: str, cache_bucket: int) -> bool:
+    _ = int(cache_bucket or 0)
+    cleaned_url = str(job_url or "").strip()
+    if not _looks_like_direct_job_posting_url(cleaned_url):
+        return False
+    parsed_for_vendor = urlsplit(cleaned_url)
+    host = str(parsed_for_vendor.netloc or "").lower()
+    path = str(parsed_for_vendor.path or "").lower()
+    if "jpmc.fa.oraclecloud.com" in host and "/candidateexperience/" in path:
+        req_id = _extract_jpmc_requisition_id(cleaned_url)
+        if req_id:
+            if not _is_jpmc_requisition_live_cached(req_id, int(cache_bucket or 0)):
+                return False
+    request = Request(
+        cleaned_url,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=max(4, min(7, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+            status_code = int(getattr(response, "status", 200) or 200)
+            final_url = str(getattr(response, "geturl", lambda: cleaned_url)() or cleaned_url).strip()
+            if status_code >= 400:
+                return False
+            if not _looks_like_direct_job_posting_url(final_url):
+                return False
+            body_sample = _decode_http_body(response.read(16384)).lower()
+            if not str(body_sample or "").strip():
+                return False
+
+            error_markers = (
+                "404",
+                "page not found",
+                "job not found",
+                "position is no longer available",
+                "no longer accepting applications",
+                "position has been filled",
+                "this job is no longer available",
+            )
+            if any(marker in body_sample for marker in error_markers):
+                return False
+
+            positive_markers = (
+                "job description",
+                "responsibilities",
+                "qualifications",
+                "requirements",
+                "about the role",
+                "position summary",
+                "apply now",
+                "requisition",
+            )
+            positive_hits = sum(1 for marker in positive_markers if marker in body_sample)
+            if positive_hits <= 0 and " job " not in f" {body_sample} ":
+                return False
+            return True
+    except HTTPError as ex:
+        status_code = int(getattr(ex, "code", 0) or 0)
+        if status_code in {404, 410}:
+            return False
+        if status_code in {401, 403, 429}:
+            # Bot-protected boards often return these for script clients.
+            # Keep as potentially live to avoid dropping valid direct apply links.
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _build_company_job_description_snippet(
+    row_html: str,
+    *,
+    title: str,
+    location: str,
+    job_type: str,
+) -> str:
+    safe_title = str(title or "").strip()
+    safe_location = str(location or "").strip()
+    safe_job_type = str(job_type or "").strip()
+    raw_row_text = strip_html_tags(html.unescape(str(row_html or ""))).strip()
+    cleaned_text = re.sub(r"\s+", " ", raw_row_text)
+    noise_tokens = (
+        "save for later",
+        "remove job",
+        "view job",
+        "view details",
+        "apply now",
+        "apply",
+    )
+    for token in noise_tokens:
+        cleaned_text = re.sub(rf"\b{re.escape(token)}\b", " ", cleaned_text, flags=re.IGNORECASE)
+    if safe_title:
+        cleaned_text = re.sub(re.escape(safe_title), " ", cleaned_text, flags=re.IGNORECASE)
+    if safe_location:
+        cleaned_text = re.sub(re.escape(safe_location), " ", cleaned_text, flags=re.IGNORECASE)
+    cleaned_text = re.sub(r"\s+", " ", cleaned_text).strip(" |,-")
+
+    descriptor_patterns = [
+        r"class=\"[^\"]*(?:job-category|job-level|job-department|sr-job-type|eyebrow text-blue)[^\"]*\"[^>]*>(.*?)</(?:span|div)>",
+    ]
+    descriptors: list[str] = []
+    seen_descriptors: set[str] = set()
+    for pattern in descriptor_patterns:
+        values = re.findall(pattern, row_html, flags=re.IGNORECASE | re.DOTALL)
+        for value in values:
+            text = strip_html_tags(html.unescape(str(value or ""))).strip()
+            text = re.sub(r"\s+", " ", text)
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered in seen_descriptors:
+                continue
+            seen_descriptors.add(lowered)
+            descriptors.append(text)
+
+    pieces: list[str] = []
+    if safe_job_type:
+        pieces.append(safe_job_type)
+    pieces.extend(descriptors[:3])
+    descriptor_snippet = " | ".join(piece for piece in pieces if piece)
+    if cleaned_text:
+        if descriptor_snippet:
+            return f"{descriptor_snippet}. {cleaned_text[:320]}".strip()
+        return cleaned_text[:360]
+    return descriptor_snippet[:240]
+
+
+def _normalize_job_description_for_card(
+    description: str,
+    *,
+    title: str,
+    company: str,
+    location: str,
+    work_type: str,
+    source: str,
+) -> str:
+    text = strip_html_tags(html.unescape(str(description or ""))).strip()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\b(save for later|remove job|view job|view details)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip(" |,-")
+    if len(text) >= 36:
+        return text[:700]
+
+    detail_parts = []
+    if work_type:
+        detail_parts.append(str(work_type).strip())
+    if location:
+        detail_parts.append(str(location).strip())
+    detail_line = " | ".join(part for part in detail_parts if part)
+    if detail_line:
+        return f"{title} at {company}. {detail_line}."
+    if source:
+        return f"{title} at {company}. Direct posting from {source}."
+    return f"{title} at {company}."
+
+
+def _sanitize_job_row_for_listing(
+    job_row: dict[str, Any],
+    *,
+    url_cache_bucket: int | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(job_row, dict):
+        return None
+    title = strip_html_tags(str(job_row.get("title", "")).strip())
+    if not title:
+        return None
+    company = strip_html_tags(str(job_row.get("company", "")).strip()) or "Unknown company"
+    location = strip_html_tags(str(job_row.get("location", "")).strip()) or "Location not listed"
+    source = strip_html_tags(str(job_row.get("source", "")).strip()) or "Unknown source"
+
+    apply_url = str(job_row.get("apply_url", "") or job_row.get("job_url", "")).strip()
+    if not _looks_like_direct_job_posting_url(apply_url):
+        return None
+    parsed_apply = urlsplit(apply_url)
+    apply_host = str(parsed_apply.netloc or "").lower()
+    apply_path = str(parsed_apply.path or "").lower()
+    # Restrict live verification to known stale-prone Oracle candidate links.
+    # Broad verification of all careers sources causes false drops on anti-bot pages.
+    should_live_verify = bool(
+        "jpmc.fa.oraclecloud.com" in apply_host and "/candidateexperience/" in apply_path
+    )
+    if should_live_verify and isinstance(url_cache_bucket, int):
+        if not _is_live_job_posting_url_cached(apply_url, url_cache_bucket):
+            return None
+
+    work_type = strip_html_tags(str(job_row.get("employment_type", "")).strip())
+    description = _normalize_job_description_for_card(
+        str(job_row.get("description", "")),
+        title=title,
+        company=company,
+        location=location,
+        work_type=work_type,
+        source=source,
+    )
+
+    cleaned = dict(job_row)
+    cleaned["title"] = title
+    cleaned["company"] = company
+    cleaned["location"] = location
+    cleaned["source"] = source
+    cleaned["apply_url"] = apply_url
+    cleaned["description"] = description
+    cleaned["employment_type"] = work_type
+    return cleaned
+
+
+def _extract_company_jobs_from_search_html(
+    html_text: str,
+    *,
+    base_url: str,
+    company_name: str,
+    source_name: str,
+    role_query: str,
+    preferred_location: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not str(html_text or "").strip():
+        return []
+
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    row_patterns = [
+        r"<li[^>]*class=\"[^\"]*\bsr-job-item\b[^\"]*\"[^>]*>(.*?)</li>",
+        r"<tr[^>]*class=\"[^\"]*\bdata-row\b[^\"]*\"[^>]*>(.*?)</tr>",
+    ]
+
+    rows: list[str] = []
+    for pattern in row_patterns:
+        matches = re.findall(pattern, html_text, flags=re.IGNORECASE | re.DOTALL)
+        if matches:
+            rows = [str(item) for item in matches if str(item).strip()]
+            break
+    if not rows:
+        search_results_section = re.search(
+            r"<section[^>]*id=\"search-results-list\"[^>]*>(.*?)</section>",
+            html_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if search_results_section:
+            section_html = search_results_section.group(1)
+            section_rows = re.findall(r"<li[^>]*>(.*?)</li>", section_html, flags=re.IGNORECASE | re.DOTALL)
+            if section_rows:
+                rows = [str(item) for item in section_rows if str(item).strip()]
+    if not rows:
+        rows = [html_text]
+
+    jobs: list[dict[str, Any]] = []
+    seen_links: set[str] = set()
+    for row in rows:
+        link_candidates = re.findall(
+            r"<a[^>]*href=\"([^\"]*?/job/[^\"]*)\"[^>]*>(.*?)</a>",
+            row,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not link_candidates:
+            broad_candidates = re.findall(
+                r"<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>",
+                row,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if broad_candidates:
+                filtered_candidates: list[tuple[str, str]] = []
+                for raw_href, raw_title in broad_candidates:
+                    apply_url = urljoin(base_url, html.unescape(str(raw_href or "").strip()))
+                    if not _looks_like_direct_job_posting_url(apply_url):
+                        continue
+                    filtered_candidates.append((raw_href, raw_title))
+                link_candidates = filtered_candidates
+        if not link_candidates:
+            continue
+
+        location_match = re.search(
+            r"class=\"[^\"]*(?:sr-job-location|jobLocation|job-location)[^\"]*\"[^>]*>(.*?)</(?:span|td)>",
+            row,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        location_text = strip_html_tags(html.unescape(location_match.group(1))).strip() if location_match else ""
+        location_text = re.sub(r"\s*\+\d+\s+more.*$", "", location_text, flags=re.IGNORECASE).strip()
+
+        job_type_match = re.search(
+            r"class=\"[^\"]*sr-job-type[^\"]*\"[^>]*>(.*?)</span>",
+            row,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        job_type = strip_html_tags(html.unescape(job_type_match.group(1))).strip() if job_type_match else ""
+
+        posted_match = re.search(
+            r"class=\"[^\"]*(?:sr-job-date|jobDate)[^\"]*\"[^>]*>(.*?)</span>",
+            row,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        posted_at = (
+            normalize_posted_at(strip_html_tags(html.unescape(posted_match.group(1))).strip()) if posted_match else ""
+        )
+
+        for raw_href, raw_title in link_candidates:
+            apply_url = urljoin(base_url, html.unescape(str(raw_href or "").strip()))
+            if not apply_url or apply_url in seen_links:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+            seen_links.add(apply_url)
+
+            heading_match = re.search(r"<h[1-4][^>]*>(.*?)</h[1-4]>", row, flags=re.IGNORECASE | re.DOTALL)
+            title_raw = heading_match.group(1) if heading_match else str(raw_title or "")
+            title = strip_html_tags(html.unescape(title_raw)).strip()
+            title = re.sub(r"\bSave for Later\b.*$", "", title, flags=re.IGNORECASE).strip()
+            title = re.sub(r"\bRemove job\b.*$", "", title, flags=re.IGNORECASE).strip()
+            title = re.sub(r"^\d{6,}\s+\d{2}/\d{2}/\d{4}\s+", "", title).strip()
+            title = re.sub(r"\s+", " ", title).strip(" -|")
+            if not title:
+                continue
+            if safe_role and not job_matches_role_query(safe_role, title, company_name):
+                continue
+
+            resolved_location = location_text or "Location not listed"
+            if safe_location and not _location_matches_preference(safe_location, resolved_location):
+                continue
+
+            description_snippet = _build_company_job_description_snippet(
+                row,
+                title=title,
+                location=resolved_location,
+                job_type=job_type,
+            )
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": resolved_location,
+                    "description": description_snippet,
+                    "apply_url": apply_url,
+                    "source": source_name,
+                    "employment_type": job_type,
+                    "contract_type": "",
+                    "posted_at": posted_at,
+                }
+            )
+            if len(jobs) >= limit:
+                return jobs
+
+    return jobs
+
+
+def fetch_company_careers_jobs(
+    role_query: str,
+    preferred_location: str,
+    *,
+    base_url: str,
+    company_name: str,
+    source_name: str,
+    role_param: str = "keywords",
+    location_param: str = "location",
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+    request_timeout_seconds: int | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], f"Enter a target role before searching {company_name} jobs."
+
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    query_params: list[tuple[str, str]] = []
+    if role_param:
+        query_params.append((role_param, safe_role))
+    if safe_location and location_param:
+        query_params.append((location_param, safe_location))
+
+    connector = "&" if "?" in base_url else "?"
+    request_url = base_url if not query_params else f"{base_url}{connector}{urlencode(query_params)}"
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+        },
+        method="GET",
+    )
+    safe_timeout = int(request_timeout_seconds or JOB_SEARCH_API_TIMEOUT_SECONDS)
+    safe_timeout = max(4, min(18, safe_timeout))
+    try:
+        with urlopen(request, timeout=safe_timeout) as response:
+            response_text = _decode_http_body(response.read())
+    except HTTPError as ex:
+        return [], f"{company_name} careers search error ({int(ex.code)})."
+    except URLError:
+        return [], f"{company_name} careers search connection failed."
+    except Exception:
+        return [], f"Could not parse {company_name} careers response."
+
+    jobs = _extract_company_jobs_from_search_html(
+        response_text,
+        base_url=base_url,
+        company_name=company_name,
+        source_name=source_name,
+        role_query=safe_role,
+        preferred_location=safe_location,
+        limit=limit,
+    )
+    if not jobs:
+        return [], f"No {company_name} roles matched the current role/location filter."
+    return jobs, ""
+
+
+def _merge_provider_batches_round_robin(
+    provider_batches: list[list[dict[str, Any]]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not provider_batches or limit <= 0:
+        return []
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    indexes = [0 for _ in provider_batches]
+    while len(deduped) < int(limit):
+        made_progress = False
+        for batch_index, batch in enumerate(provider_batches):
+            while indexes[batch_index] < len(batch):
+                job = batch[indexes[batch_index]]
+                indexes[batch_index] += 1
+                title = str(job.get("title", "")).strip().lower()
+                company = str(job.get("company", "")).strip().lower()
+                location = str(job.get("location", "")).strip().lower()
+                apply_url = str(job.get("apply_url", "")).strip().lower()
+                dedupe_key = (title, company, location, apply_url)
+                if not title or dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                deduped.append(job)
+                made_progress = True
+                break
+            if len(deduped) >= int(limit):
+                break
+        if not made_progress:
+            break
+    return deduped
+
+
+def _extract_json_array_after_marker(text: str, marker: str) -> list[dict[str, Any]]:
+    raw_text = str(text or "")
+    marker_text = str(marker or "")
+    if not raw_text or not marker_text:
+        return []
+    marker_index = raw_text.find(marker_text)
+    if marker_index < 0:
+        return []
+    bracket_index = raw_text.find("[", marker_index)
+    if bracket_index < 0:
+        return []
+
+    depth = 0
+    in_string = False
+    escaped = False
+    end_index = -1
+    for idx in range(bracket_index, len(raw_text)):
+        ch = raw_text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "[":
+            depth += 1
+            continue
+        if ch == "]":
+            depth -= 1
+            if depth == 0:
+                end_index = idx
+                break
+    if end_index <= bracket_index:
+        return []
+    json_text = raw_text[bracket_index : end_index + 1]
+    try:
+        parsed = json.loads(json_text)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def fetch_citi_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://jobs.citi.com/search-jobs",
+        company_name="Citi",
+        source_name="Citi Careers",
+        role_param="keywords",
+        location_param="location",
+        max_results=max_results,
+    )
+
+
+def fetch_capitalone_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://www.capitalonecareers.com/search-jobs",
+        company_name="Capital One",
+        source_name="Capital One Careers",
+        role_param="keywords",
+        location_param="location",
+        max_results=max_results,
+    )
+
+
+def fetch_pwc_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://jobs.us.pwc.com/search-jobs",
+        company_name="PwC",
+        source_name="PwC Careers",
+        role_param="keywords",
+        location_param="location",
+        max_results=max_results,
+    )
+
+
+def fetch_ey_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://careers.ey.com/ey/search/",
+        company_name="EY",
+        source_name="EY Careers",
+        role_param="keywords",
+        location_param="location",
+        max_results=max_results,
+    )
+
+
+@lru_cache(maxsize=512)
+def _fetch_weill_cornell_job_detail_excerpt(job_url: str) -> str:
+    request = Request(
+        str(job_url or "").strip(),
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=max(4, min(7, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+            html_text = _decode_http_body(response.read())
+    except Exception:
+        return ""
+
+    clean_html = str(html_text or "")
+    if not clean_html:
+        return ""
+    snippets: list[str] = []
+    section_matches = re.findall(
+        r"(?is)<h2[^>]*>\s*([^<]{2,140})\s*</h2>\s*(<[^>]+>.*?)(?=<h2|$)",
+        clean_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for heading, body in section_matches:
+        heading_text = strip_html_tags(html.unescape(str(heading or ""))).strip()
+        body_text = strip_html_tags(html.unescape(str(body or ""))).strip()
+        body_text = re.sub(r"\s+", " ", body_text)
+        if not heading_text or not body_text:
+            continue
+        snippets.append(f"{heading_text}: {body_text[:420]}")
+        if len(snippets) >= 2:
+            break
+    if snippets:
+        return " | ".join(snippets)
+
+    fallback_text = strip_html_tags(html.unescape(clean_html))
+    fallback_text = re.sub(r"\s+", " ", fallback_text).strip()
+    return fallback_text[:700]
+
+
+def fetch_weill_cornell_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Weill Cornell jobs."
+
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    request_url = f"https://jobs.weill.cornell.edu/NY/search/?{urlencode({'q': safe_role})}"
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+            response_text = _decode_http_body(response.read())
+    except HTTPError as ex:
+        return [], f"Weill Cornell careers search error ({int(ex.code)})."
+    except URLError:
+        return [], "Weill Cornell careers search connection failed."
+    except Exception:
+        return [], "Could not parse Weill Cornell careers response."
+
+    job_blocks = re.findall(
+        r"(?is)<li[^>]*class=\"[^\"]*\bjob-tile\b[^\"]*\"[^>]*>(.*?)</li>",
+        response_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not job_blocks:
+        return [], "No Weill Cornell roles matched the current role/location filter."
+
+    jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for block in job_blocks:
+        href_match = re.search(r'href=\"([^\"]*/NY/job/[^\"]+)\"', block, flags=re.IGNORECASE)
+        if not href_match:
+            continue
+        apply_url = urljoin("https://jobs.weill.cornell.edu", html.unescape(str(href_match.group(1) or "").strip()))
+        if not apply_url or apply_url in seen_urls:
+            continue
+        if not _looks_like_direct_job_posting_url(apply_url):
+            continue
+        seen_urls.add(apply_url)
+
+        title_match = re.search(
+            r'(?is)<a[^>]*class=\"[^\"]*jobTitle-link[^\"]*\"[^>]*>(.*?)</a>',
+            block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        title = strip_html_tags(html.unescape(title_match.group(1) if title_match else "")).strip()
+        title = re.sub(r"\s+", " ", title)
+        if not title:
+            continue
+        if not job_matches_role_query(safe_role, title, "Weill Cornell"):
+            continue
+
+        location_match = re.search(
+            r'(?is)section-location-value\"[^>]*>(.*?)</div>',
+            block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        location = strip_html_tags(html.unescape(location_match.group(1) if location_match else "")).strip()
+        location = re.sub(r"\s+", " ", location) or "Location not listed"
+        location = re.sub(r"^location\s+", "", location, flags=re.IGNORECASE).strip() or location
+        if safe_location and not _location_matches_preference(safe_location, location):
+            continue
+
+        dept_match = re.search(r'(?is)section-dept-value\"[^>]*>(.*?)</div>', block, flags=re.IGNORECASE | re.DOTALL)
+        division_match = re.search(
+            r'(?is)section-businessunit-value\"[^>]*>(.*?)</div>',
+            block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        dept_text = strip_html_tags(html.unescape(dept_match.group(1) if dept_match else "")).strip()
+        division_text = strip_html_tags(html.unescape(division_match.group(1) if division_match else "")).strip()
+        base_description = " | ".join(part for part in [dept_text, division_text] if part)
+        detail_excerpt = _fetch_weill_cornell_job_detail_excerpt(apply_url)
+        description = detail_excerpt or base_description
+
+        jobs.append(
+            {
+                "title": title,
+                "company": "Weill Cornell Medicine",
+                "location": location,
+                "description": description,
+                "apply_url": apply_url,
+                "source": "Weill Cornell Careers",
+                "employment_type": "",
+                "contract_type": "",
+                "posted_at": "",
+            }
+        )
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No Weill Cornell roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_l3harris_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://careers.l3harris.com/search-jobs",
+        company_name="L3Harris Technologies",
+        source_name="L3Harris Careers",
+        role_param="k",
+        location_param="loc",
+        max_results=max_results,
+    )
+
+
+def fetch_sap_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://jobs.sap.com/search/",
+        company_name="SAP",
+        source_name="SAP Careers",
+        role_param="q",
+        location_param="locationsearch",
+        max_results=max_results,
+    )
+
+
+def fetch_boeing_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Boeing jobs."
+
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    query_pairs: list[tuple[str, str]] = [("k", safe_role)]
+    if safe_location:
+        query_pairs.append(("l", safe_location))
+    request_url = f"https://jobs.boeing.com/search-jobs?{urlencode(query_pairs)}"
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+            response_text = _decode_http_body(response.read())
+    except HTTPError as ex:
+        return [], f"Boeing careers search error ({int(ex.code)})."
+    except URLError:
+        return [], "Boeing careers search connection failed."
+    except Exception:
+        return [], "Could not parse Boeing careers response."
+
+    anchor_matches = re.findall(
+        r'(?is)<a[^>]*href=\"([^\"]*?/job/[^\"]+)\"[^>]*>(.*?)</a>',
+        response_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not anchor_matches:
+        return [], "No Boeing roles matched the current role/location filter."
+
+    jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for raw_href, raw_title in anchor_matches:
+        apply_url = urljoin("https://jobs.boeing.com", html.unescape(str(raw_href or "").strip()))
+        if not apply_url or apply_url in seen_urls:
+            continue
+        if not _looks_like_direct_job_posting_url(apply_url):
+            continue
+
+        path_segments = [segment for segment in urlsplit(apply_url).path.split("/") if segment]
+        if len(path_segments) < 4 or path_segments[0].lower() != "job":
+            continue
+
+        title = strip_html_tags(html.unescape(str(raw_title or ""))).strip()
+        title = re.sub(r"\s+", " ", title).strip(" -|")
+        if not title:
+            continue
+
+        location_slug = path_segments[1] if len(path_segments) >= 2 else ""
+        inferred_location = re.sub(r"[-_]+", " ", str(location_slug or "")).strip().title() or "Location not listed"
+        if safe_location and not _location_matches_preference(safe_location, inferred_location):
+            continue
+        if safe_role and not job_matches_role_query(safe_role, title, "Boeing"):
+            continue
+
+        role_slug = path_segments[2] if len(path_segments) >= 3 else ""
+        role_hint = re.sub(r"[-_]+", " ", str(role_slug or "")).strip().title()
+        description = " | ".join(part for part in [role_hint, "Direct posting from Boeing Careers"] if part)
+        seen_urls.add(apply_url)
+        jobs.append(
+            {
+                "title": title,
+                "company": "Boeing",
+                "location": inferred_location,
+                "description": description,
+                "apply_url": apply_url,
+                "source": "Boeing Careers",
+                "employment_type": "",
+                "contract_type": "",
+                "posted_at": "",
+            }
+        )
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No Boeing roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_att_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://www.att.jobs/search-jobs",
+        company_name="AT&T",
+        source_name="AT&T Careers",
+        role_param="k",
+        location_param="loc",
+        max_results=max_results,
+    )
+
+
+def fetch_comcast_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://jobs.comcast.com/search-jobs",
+        company_name="Comcast",
+        source_name="Comcast Careers",
+        role_param="k",
+        location_param="loc",
+        max_results=max_results,
+    )
+
+
+def fetch_dell_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://jobs.dell.com/search-jobs",
+        company_name="Dell Technologies",
+        source_name="Dell Careers",
+        role_param="k",
+        location_param="loc",
+        max_results=max_results,
+    )
+
+
+def fetch_bayer_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://jobs.bayer.com/search/",
+        company_name="Bayer",
+        source_name="Bayer Careers",
+        role_param="q",
+        location_param="locationsearch",
+        max_results=max_results,
+    )
+
+
+def fetch_boston_scientific_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    return fetch_company_careers_jobs(
+        role_query,
+        preferred_location,
+        base_url="https://jobs.bostonscientific.com/search/",
+        company_name="Boston Scientific",
+        source_name="Boston Scientific Careers",
+        role_param="q",
+        location_param="locationsearch",
+        max_results=max_results,
+    )
+
+
+def fetch_greenhouse_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching official careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    cache_bucket = int(time.time() // max(1, JOB_SEARCH_FETCH_CACHE_TTL_SECONDS))
+    cached_jobs, note = _fetch_greenhouse_network_jobs_cached(
+        safe_role,
+        safe_location,
+        limit,
+        cache_bucket,
+    )
+    return [dict(item) for item in cached_jobs if isinstance(item, dict)], note
+
+
+@lru_cache(maxsize=128)
+def _fetch_greenhouse_network_jobs_cached(
+    role_query: str,
+    preferred_location: str,
+    max_results: int,
+    cache_bucket: int,
+) -> tuple[tuple[dict[str, Any], ...], str]:
+    _ = cache_bucket
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_board_limit = max(2, min(5, int(limit / max(1, len(GREENHOUSE_COMPANY_BOARDS))) + 2))
+
+    def _fetch_board(board_token: str, company_name: str) -> list[dict[str, Any]]:
+        request = Request(
+            f"https://boards-api.greenhouse.io/v1/boards/{quote(board_token)}/jobs?content=false",
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "PyStreamlineAI/1.0",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                payload = json.loads(_decode_http_body(response.read()))
+        except Exception:
+            return []
+
+        raw_jobs = payload.get("jobs", []) if isinstance(payload, dict) else []
+        if not isinstance(raw_jobs, list) or not raw_jobs:
+            return []
+
+        board_jobs: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for item in raw_jobs:
+            if not isinstance(item, dict):
+                continue
+            title = strip_html_tags(str(item.get("title", "")).strip())
+            apply_url = str(item.get("absolute_url", "")).strip()
+            if not title or not apply_url:
+                continue
+            if apply_url in seen_urls:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+
+            location_obj = item.get("location", {})
+            location_text = ""
+            if isinstance(location_obj, dict):
+                location_text = strip_html_tags(str(location_obj.get("name", "")).strip())
+            location_text = location_text or "Location not listed"
+            if safe_location and not _location_matches_preference(safe_location, location_text):
+                continue
+            if not job_matches_role_query(safe_role, title, company_name):
+                continue
+
+            metadata_obj = item.get("metadata", {})
+            metadata_summary = ""
+            if isinstance(metadata_obj, list):
+                metadata_parts: list[str] = []
+                for meta in metadata_obj:
+                    if not isinstance(meta, dict):
+                        continue
+                    key = strip_html_tags(str(meta.get("name", "")).strip())
+                    value = strip_html_tags(str(meta.get("value", "")).strip())
+                    if key and value:
+                        metadata_parts.append(f"{key}: {value}")
+                metadata_summary = " | ".join(metadata_parts[:2])
+            department_obj = item.get("departments", [])
+            department_names: list[str] = []
+            if isinstance(department_obj, list):
+                for dep in department_obj:
+                    if isinstance(dep, dict):
+                        dep_name = strip_html_tags(str(dep.get("name", "")).strip())
+                        if dep_name:
+                            department_names.append(dep_name)
+            description = " | ".join(part for part in [", ".join(department_names[:2]), metadata_summary] if part)
+            seen_urls.add(apply_url)
+            board_jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": description,
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers",
+                    "employment_type": "",
+                    "contract_type": "",
+                    "posted_at": "",
+                }
+            )
+            if len(board_jobs) >= per_board_limit:
+                break
+        return board_jobs
+
+    ordered_results: list[list[dict[str, Any]] | None] = [None] * len(GREENHOUSE_COMPANY_BOARDS)
+    with ThreadPoolExecutor(max_workers=max(1, min(16, len(GREENHOUSE_COMPANY_BOARDS)))) as executor:
+        future_to_index = {
+            executor.submit(_fetch_board, token, company): index
+            for index, (token, company) in enumerate(GREENHOUSE_COMPANY_BOARDS)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                jobs = future.result()
+            except Exception:
+                jobs = []
+            if isinstance(jobs, list) and jobs:
+                ordered_results[index] = [job for job in jobs if isinstance(job, dict)]
+
+    provider_batches = [batch for batch in ordered_results if isinstance(batch, list) and batch]
+    if not provider_batches:
+        return tuple(), "No additional direct postings found from partner career boards."
+
+    deduped: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str, str, str]] = set()
+    indexes = [0 for _ in provider_batches]
+    while len(deduped) < limit:
+        made_progress = False
+        for batch_index, batch in enumerate(provider_batches):
+            while indexes[batch_index] < len(batch):
+                job = batch[indexes[batch_index]]
+                indexes[batch_index] += 1
+                title = str(job.get("title", "")).strip().lower()
+                company = str(job.get("company", "")).strip().lower()
+                location = str(job.get("location", "")).strip().lower()
+                apply_url = str(job.get("apply_url", "")).strip().lower()
+                key = (title, company, location, apply_url)
+                if not title or key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                deduped.append(job)
+                made_progress = True
+                break
+            if len(deduped) >= limit:
+                break
+        if not made_progress:
+            break
+    if not deduped:
+        return tuple(), "No additional direct postings found from partner career boards."
+    return tuple(dict(item) for item in deduped), ""
+
+
+def fetch_lever_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Lever careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    cache_bucket = int(time.time() // max(1, JOB_SEARCH_FETCH_CACHE_TTL_SECONDS))
+    cached_jobs, note = _fetch_lever_network_jobs_cached(safe_role, safe_location, limit, cache_bucket)
+    return [dict(item) for item in cached_jobs if isinstance(item, dict)], note
+
+
+@lru_cache(maxsize=128)
+def _fetch_lever_network_jobs_cached(
+    role_query: str,
+    preferred_location: str,
+    max_results: int,
+    cache_bucket: int,
+) -> tuple[tuple[dict[str, Any], ...], str]:
+    _ = cache_bucket
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_board_limit = max(2, min(5, limit))
+
+    def _fetch_board(board_token: str, company_name: str) -> list[dict[str, Any]]:
+        request_url = f"https://api.lever.co/v0/postings/{quote(board_token)}?mode=json&limit={max(8, per_board_limit * 3)}"
+        request = Request(
+            request_url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "PyStreamlineAI/1.0",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                payload = json.loads(_decode_http_body(response.read()))
+        except Exception:
+            return []
+        if not isinstance(payload, list) or not payload:
+            return []
+
+        board_jobs: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            title = strip_html_tags(str(item.get("text", "")).strip())
+            if not title:
+                continue
+            apply_url = str(item.get("hostedUrl", "") or item.get("applyUrl", "")).strip()
+            if apply_url.endswith("/apply"):
+                apply_url = apply_url[: -len("/apply")]
+            if not apply_url or apply_url in seen_urls:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+
+            categories = item.get("categories", {})
+            location_text = ""
+            if isinstance(categories, dict):
+                location_text = strip_html_tags(str(categories.get("location", "")).strip())
+            location_text = location_text or strip_html_tags(str(item.get("country", "")).strip()) or "Location not listed"
+            if safe_location and not _location_matches_preference(safe_location, location_text):
+                continue
+
+            commitment = strip_html_tags(str(categories.get("commitment", "")).strip()) if isinstance(categories, dict) else ""
+            department = strip_html_tags(str(categories.get("department", "")).strip()) if isinstance(categories, dict) else ""
+            description_plain = strip_html_tags(str(item.get("descriptionPlain", "")).strip())
+            description = " | ".join(part for part in [commitment, department, description_plain[:360]] if part)
+            if not job_matches_role_query(safe_role, title, description, company_name):
+                continue
+
+            created_at = item.get("createdAt")
+            posted_at = ""
+            try:
+                if created_at is not None:
+                    created_value = int(float(created_at))
+                    if created_value > 10_000_000_000:
+                        created_value = int(created_value / 1000)
+                    posted_at = normalize_posted_at(datetime.fromtimestamp(created_value, tz=timezone.utc).isoformat())
+            except Exception:
+                posted_at = ""
+
+            seen_urls.add(apply_url)
+            board_jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": description,
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers (Lever)",
+                    "employment_type": commitment,
+                    "contract_type": "",
+                    "posted_at": posted_at,
+                }
+            )
+            if len(board_jobs) >= per_board_limit:
+                break
+        return board_jobs
+
+    ordered_results: list[list[dict[str, Any]] | None] = [None] * len(LEVER_COMPANY_BOARDS)
+    with ThreadPoolExecutor(max_workers=max(1, min(10, len(LEVER_COMPANY_BOARDS)))) as executor:
+        future_to_index = {
+            executor.submit(_fetch_board, token, company): index
+            for index, (token, company) in enumerate(LEVER_COMPANY_BOARDS)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                jobs = future.result()
+            except Exception:
+                jobs = []
+            if isinstance(jobs, list) and jobs:
+                ordered_results[index] = [job for job in jobs if isinstance(job, dict)]
+
+    provider_batches = [batch for batch in ordered_results if isinstance(batch, list) and batch]
+    if not provider_batches:
+        return tuple(), "No Lever network roles matched the current role/location filter."
+    deduped = _merge_provider_batches_round_robin(provider_batches, limit)
+    if not deduped:
+        return tuple(), "No Lever network roles matched the current role/location filter."
+    return tuple(dict(item) for item in deduped), ""
+
+
+def fetch_workday_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Workday careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    cache_bucket = int(time.time() // max(1, JOB_SEARCH_FETCH_CACHE_TTL_SECONDS))
+    cached_jobs, note = _fetch_workday_network_jobs_cached(safe_role, safe_location, limit, cache_bucket)
+    return [dict(item) for item in cached_jobs if isinstance(item, dict)], note
+
+
+@lru_cache(maxsize=128)
+def _fetch_workday_network_jobs_cached(
+    role_query: str,
+    preferred_location: str,
+    max_results: int,
+    cache_bucket: int,
+) -> tuple[tuple[dict[str, Any], ...], str]:
+    _ = cache_bucket
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_source_limit = max(2, min(6, int(limit / max(1, len(WORKDAY_PUBLIC_JOB_APIS))) + 2))
+
+    def _fetch_source(item: dict[str, str]) -> list[dict[str, Any]]:
+        company_name = " ".join(str(item.get("company", "")).split())
+        endpoint = str(item.get("endpoint", "")).strip()
+        base_url = str(item.get("base_url", "")).strip()
+        if not company_name or not endpoint or not base_url:
+            return []
+        search_page_size = min(20, max(12, per_source_limit * 4))
+        source_jobs: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for page_offset in (0, search_page_size):
+            payload = json.dumps(
+                {
+                    "limit": search_page_size,
+                    "offset": page_offset,
+                    "searchText": safe_role,
+                }
+            ).encode("utf-8")
+            request = Request(
+                endpoint,
+                data=payload,
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": "PyStreamlineAI/1.0",
+                },
+                method="POST",
+            )
+            try:
+                with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                    raw_payload = json.loads(_decode_http_body(response.read()))
+            except Exception:
+                if page_offset == 0:
+                    return []
+                break
+
+            postings = raw_payload.get("jobPostings", []) if isinstance(raw_payload, dict) else []
+            if not isinstance(postings, list) or not postings:
+                break
+
+            for posting in postings:
+                if not isinstance(posting, dict):
+                    continue
+                title = strip_html_tags(str(posting.get("title", "")).strip())
+                if not title:
+                    continue
+                external_path = str(posting.get("externalPath", "")).strip()
+                apply_url = urljoin(base_url, external_path)
+                if not apply_url or apply_url in seen_urls:
+                    continue
+                if not _looks_like_direct_job_posting_url(apply_url):
+                    continue
+
+                location_text = strip_html_tags(str(posting.get("locationsText", "")).strip()) or "Location not listed"
+                if safe_location and not _location_matches_preference(safe_location, location_text):
+                    continue
+
+                bullet_fields = posting.get("bulletFields", [])
+                bullet_text = ""
+                if isinstance(bullet_fields, list):
+                    bullet_text = " | ".join(
+                        strip_html_tags(str(value).strip()) for value in bullet_fields[:2] if str(value).strip()
+                    )
+                posted_on = strip_html_tags(str(posting.get("postedOn", "")).strip())
+                description = " | ".join(part for part in [bullet_text, posted_on] if part)
+                if not job_matches_role_query(safe_role, title, description, company_name):
+                    continue
+
+                seen_urls.add(apply_url)
+                source_jobs.append(
+                    {
+                        "title": title,
+                        "company": company_name,
+                        "location": location_text,
+                        "description": description,
+                        "apply_url": apply_url,
+                        "source": f"{company_name} Careers (Workday)",
+                        "employment_type": "",
+                        "contract_type": "",
+                        "posted_at": normalize_posted_at(posted_on),
+                    }
+                )
+                if len(source_jobs) >= per_source_limit:
+                    return source_jobs
+            if len(postings) < search_page_size:
+                break
+        return source_jobs
+
+    ordered_results: list[list[dict[str, Any]] | None] = [None] * len(WORKDAY_PUBLIC_JOB_APIS)
+    with ThreadPoolExecutor(max_workers=max(1, min(6, len(WORKDAY_PUBLIC_JOB_APIS)))) as executor:
+        future_to_index = {
+            executor.submit(_fetch_source, source): index
+            for index, source in enumerate(WORKDAY_PUBLIC_JOB_APIS)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                jobs = future.result()
+            except Exception:
+                jobs = []
+            if isinstance(jobs, list) and jobs:
+                ordered_results[index] = [job for job in jobs if isinstance(job, dict)]
+
+    provider_batches = [batch for batch in ordered_results if isinstance(batch, list) and batch]
+    if not provider_batches:
+        return tuple(), "No Workday network roles matched the current role/location filter."
+    deduped = _merge_provider_batches_round_robin(provider_batches, limit)
+    if not deduped:
+        return tuple(), "No Workday network roles matched the current role/location filter."
+    return tuple(dict(item) for item in deduped), ""
+
+
+def fetch_workable_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Workable careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    request_url = (
+        "https://jobs.workable.com/api/v1/jobs?"
+        + urlencode(
+            {
+                "query": safe_role,
+                "location": safe_location,
+                "department": "",
+                "account": WORKABLE_PUBLIC_QUERY_ACCOUNT,
+            }
+        )
+    )
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "PyStreamlineAI/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+            payload = json.loads(_decode_http_body(response.read()))
+    except HTTPError as ex:
+        return [], f"Workable API error ({int(ex.code)})."
+    except URLError:
+        return [], "Workable API connection failed."
+    except Exception:
+        return [], "Could not parse Workable API response."
+
+    jobs = payload.get("jobs", []) if isinstance(payload, dict) else []
+    if not isinstance(jobs, list) or not jobs:
+        return [], "No Workable roles matched the current role/location filter."
+
+    parsed_jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for item in jobs:
+        if not isinstance(item, dict):
+            continue
+        title = strip_html_tags(str(item.get("title", "")).strip())
+        if not title:
+            continue
+        apply_url = str(item.get("url", "")).strip()
+        if not apply_url or apply_url in seen_urls:
+            continue
+        if not _looks_like_direct_job_posting_url(apply_url):
+            continue
+
+        company_obj = item.get("company", {})
+        company_name = ""
+        if isinstance(company_obj, dict):
+            company_name = strip_html_tags(str(company_obj.get("title", "")).strip())
+        company_name = company_name or "Workable Employer"
+
+        location_text = "Location not listed"
+        locations_obj = item.get("locations", [])
+        if isinstance(locations_obj, list) and locations_obj:
+            location_text = " | ".join(strip_html_tags(str(loc).strip()) for loc in locations_obj[:2] if str(loc).strip())
+        if location_text == "Location not listed":
+            location_obj = item.get("location", {})
+            if isinstance(location_obj, dict):
+                location_parts = [
+                    strip_html_tags(str(location_obj.get("city", "")).strip()),
+                    strip_html_tags(str(location_obj.get("subregion", "")).strip()),
+                    strip_html_tags(str(location_obj.get("countryName", "")).strip()),
+                ]
+                location_text = ", ".join(part for part in location_parts if part) or location_text
+        if safe_location and not _location_matches_preference(safe_location, location_text):
+            continue
+
+        employment_type = strip_html_tags(str(item.get("employmentType", "")).strip())
+        workplace = strip_html_tags(str(item.get("workplace", "")).strip())
+        description = strip_html_tags(str(item.get("description", "")).strip())
+        description = " | ".join(part for part in [employment_type, workplace, description[:320]] if part)
+        if not job_matches_role_query(safe_role, title, description, company_name):
+            continue
+
+        seen_urls.add(apply_url)
+        parsed_jobs.append(
+            {
+                "title": title,
+                "company": company_name,
+                "location": location_text,
+                "description": description,
+                "apply_url": apply_url,
+                "source": f"{company_name} Careers (Workable)",
+                "employment_type": employment_type or workplace,
+                "contract_type": "",
+                "posted_at": normalize_posted_at(str(item.get("updated", "")).strip() or str(item.get("created", "")).strip()),
+            }
+        )
+        if len(parsed_jobs) >= limit:
+            break
+
+    if not parsed_jobs:
+        return [], "No Workable roles matched the current role/location filter."
+    return parsed_jobs, ""
+
+
+def fetch_ashby_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Ashby careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    cache_bucket = int(time.time() // max(1, JOB_SEARCH_FETCH_CACHE_TTL_SECONDS))
+    cached_jobs, note = _fetch_ashby_network_jobs_cached(safe_role, safe_location, limit, cache_bucket)
+    return [dict(item) for item in cached_jobs if isinstance(item, dict)], note
+
+
+@lru_cache(maxsize=128)
+def _fetch_ashby_network_jobs_cached(
+    role_query: str,
+    preferred_location: str,
+    max_results: int,
+    cache_bucket: int,
+) -> tuple[tuple[dict[str, Any], ...], str]:
+    _ = cache_bucket
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_board_limit = max(2, min(5, limit))
+
+    def _fetch_board(board_token: str, company_name: str) -> list[dict[str, Any]]:
+        request = Request(
+            f"https://jobs.ashbyhq.com/{quote(board_token)}",
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": "PyStreamlineAI/1.0",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                response_text = _decode_http_body(response.read())
+        except Exception:
+            return []
+
+        postings = _extract_json_array_after_marker(response_text, "\"jobPostings\":")
+        if not postings:
+            return []
+
+        board_jobs: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for posting in postings:
+            title = strip_html_tags(str(posting.get("title", "")).strip())
+            posting_id = str(posting.get("id", "")).strip()
+            if not title or not posting_id:
+                continue
+            apply_url = f"https://jobs.ashbyhq.com/{board_token}/{posting_id}"
+            if apply_url in seen_urls:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+
+            location_text = strip_html_tags(str(posting.get("locationName", "")).strip()) or "Location not listed"
+            if safe_location and not _location_matches_preference(safe_location, location_text):
+                continue
+
+            team_name = strip_html_tags(str(posting.get("teamName", "")).strip())
+            employment_type = strip_html_tags(str(posting.get("employmentType", "")).strip())
+            workplace_type = strip_html_tags(str(posting.get("workplaceType", "")).strip())
+            description = " | ".join(part for part in [team_name, employment_type, workplace_type] if part)
+            if not job_matches_role_query(safe_role, title, description, company_name):
+                continue
+
+            seen_urls.add(apply_url)
+            board_jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": description,
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers (Ashby)",
+                    "employment_type": employment_type or workplace_type,
+                    "contract_type": "",
+                    "posted_at": normalize_posted_at(str(posting.get("publishedDate", "")).strip()),
+                }
+            )
+            if len(board_jobs) >= per_board_limit:
+                break
+        return board_jobs
+
+    ordered_results: list[list[dict[str, Any]] | None] = [None] * len(ASHBY_COMPANY_BOARDS)
+    with ThreadPoolExecutor(max_workers=max(1, min(10, len(ASHBY_COMPANY_BOARDS)))) as executor:
+        future_to_index = {
+            executor.submit(_fetch_board, token, company): index
+            for index, (token, company) in enumerate(ASHBY_COMPANY_BOARDS)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                jobs = future.result()
+            except Exception:
+                jobs = []
+            if isinstance(jobs, list) and jobs:
+                ordered_results[index] = [job for job in jobs if isinstance(job, dict)]
+
+    provider_batches = [batch for batch in ordered_results if isinstance(batch, list) and batch]
+    if not provider_batches:
+        return tuple(), "No Ashby network roles matched the current role/location filter."
+    deduped = _merge_provider_batches_round_robin(provider_batches, limit)
+    if not deduped:
+        return tuple(), "No Ashby network roles matched the current role/location filter."
+    return tuple(dict(item) for item in deduped), ""
+
+
+def fetch_icims_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching iCIMS careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_source_limit = max(1, min(4, int(limit / max(1, len(ICIMS_PUBLIC_SEARCH_PORTALS))) + 1))
+    jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    for portal in ICIMS_PUBLIC_SEARCH_PORTALS:
+        company_name = " ".join(str(portal.get("company", "")).split())
+        search_url = str(portal.get("search_url", "")).strip()
+        if not company_name or not search_url:
+            continue
+        query_url = f"{search_url}&searchKeyword={quote(safe_role)}&in_iframe=1"
+        request = Request(
+            query_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": "PyStreamlineAI/1.0",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(3, min(5, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                response_text = _decode_http_body(response.read())
+        except Exception:
+            continue
+
+        link_matches = re.findall(
+            r'href=\"([^\"]+)\"[^>]*>(.*?)</a>',
+            response_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        source_count = 0
+        for raw_href, raw_title in link_matches:
+            apply_url = urljoin(search_url, html.unescape(str(raw_href or "").strip()))
+            if not apply_url or apply_url in seen_urls:
+                continue
+            lowered = apply_url.lower()
+            if "/jobs/search" in lowered or "/jobs/intro" in lowered or "/jobs/login" in lowered:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+            title = strip_html_tags(html.unescape(str(raw_title or "").strip()))
+            title = re.sub(r"\s+", " ", title).strip(" -|")
+            title = re.sub(r"(?i)^advertised job title\s*", "", title).strip()
+            title = title or _title_from_job_url_path(apply_url, fallback=f"{company_name} Role")
+            if not title:
+                continue
+            if not job_matches_role_query(safe_role, title, company_name):
+                continue
+            location_text = "Location not listed"
+            if safe_location and not _location_matches_preference(safe_location, location_text):
+                continue
+            seen_urls.add(apply_url)
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": "Direct posting from iCIMS career portal.",
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers (iCIMS)",
+                    "employment_type": "",
+                    "contract_type": "",
+                    "posted_at": "",
+                }
+            )
+            source_count += 1
+            if source_count >= per_source_limit or len(jobs) >= limit:
+                break
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No iCIMS network roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_taleo_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Taleo careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_source_limit = max(1, min(4, int(limit / max(1, len(TALEO_PUBLIC_SEARCH_PORTALS))) + 1))
+    jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    for portal in TALEO_PUBLIC_SEARCH_PORTALS:
+        company_name = " ".join(str(portal.get("company", "")).split())
+        search_url = str(portal.get("search_url", "")).strip()
+        if not company_name or not search_url:
+            continue
+        request = Request(
+            search_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": "PyStreamlineAI/1.0",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(3, min(5, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                response_text = _decode_http_body(response.read())
+        except Exception:
+            continue
+
+        link_matches = re.findall(r'href=\"([^\"]+)\"[^>]*>(.*?)</a>', response_text, flags=re.IGNORECASE | re.DOTALL)
+        source_count = 0
+        for raw_href, raw_title in link_matches:
+            apply_url = urljoin(search_url, html.unescape(str(raw_href or "").strip()))
+            if not apply_url or apply_url in seen_urls:
+                continue
+            lowered = apply_url.lower()
+            if "jobdetail.ftl" not in lowered and "/job/" not in lowered:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+            title = strip_html_tags(html.unescape(str(raw_title or "").strip()))
+            title = re.sub(r"\s+", " ", title).strip(" -|")
+            title = title or f"{company_name} Role"
+            if not job_matches_role_query(safe_role, title, company_name):
+                continue
+            location_text = "Location not listed"
+            if safe_location and not _location_matches_preference(safe_location, location_text):
+                continue
+            seen_urls.add(apply_url)
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": "Direct posting from Taleo career portal.",
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers (Taleo)",
+                    "employment_type": "",
+                    "contract_type": "",
+                    "posted_at": "",
+                }
+            )
+            source_count += 1
+            if source_count >= per_source_limit or len(jobs) >= limit:
+                break
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No Taleo network roles matched the current role/location filter."
+    return jobs, ""
+
+
+def _normalize_discovered_job_link(raw_link: str) -> str:
+    cleaned = html.unescape(str(raw_link or "").strip())
+    if not cleaned:
+        return ""
+    cleaned = cleaned.replace("\\/", "/")
+    cleaned = cleaned.rstrip(").,;\"'")
+    if cleaned.startswith("http://"):
+        cleaned = "https://" + cleaned[len("http://") :]
+    try:
+        parsed = urlsplit(cleaned)
+    except Exception:
+        return ""
+    if str(parsed.scheme or "").lower() not in {"http", "https"}:
+        return ""
+    return cleaned
+
+
+def _friendly_company_name_from_host(raw_host: str) -> str:
+    host = str(raw_host or "").strip().lower()
+    if not host:
+        return "Unknown Company"
+    segments = [segment for segment in host.split(".") if segment]
+    if not segments:
+        return "Unknown Company"
+    company_token = segments[0]
+    if company_token == "www" and len(segments) > 1:
+        company_token = segments[1]
+    clean = re.sub(r"[^a-z0-9\-]+", "-", company_token).strip("-")
+    if not clean:
+        return "Unknown Company"
+    return " ".join(part.capitalize() for part in clean.split("-") if part) or "Unknown Company"
+
+
+def _title_from_job_url_path(job_url: str, fallback: str = "Role") -> str:
+    try:
+        parsed = urlsplit(str(job_url or "").strip())
+    except Exception:
+        parsed = urlsplit("")
+    path_segments = [segment for segment in str(parsed.path or "").split("/") if segment]
+    if not path_segments:
+        return fallback
+    slug = path_segments[-1]
+    if not slug or slug.lower() in {"apply", "job", "jobs"}:
+        slug = path_segments[-2] if len(path_segments) >= 2 else slug
+    slug = re.sub(r"^[A-Za-z0-9]{8,}-", "", slug)
+    slug = re.sub(r"\.[a-z0-9]{2,6}$", "", slug, flags=re.IGNORECASE)
+    slug = re.sub(r"[^a-zA-Z0-9]+", " ", slug).strip()
+    if not slug:
+        return fallback
+    return " ".join(token.capitalize() if token.islower() else token for token in slug.split())
+
+
+@lru_cache(maxsize=384)
+def _discover_direct_job_links_via_brave_cached(
+    query: str,
+    host_keyword: str,
+    path_keyword: str,
+    max_links: int,
+    cache_bucket: int,
+) -> tuple[str, ...]:
+    _ = cache_bucket
+    safe_query = " ".join(str(query or "").split())
+    if not safe_query:
+        return tuple()
+    safe_host_keyword = str(host_keyword or "").strip().lower()
+    safe_path_keyword = str(path_keyword or "").strip().lower()
+    limit = max(4, min(80, int(max_links or 25)))
+    deduped: list[str] = []
+    seen: set[str] = set()
+
+    def _append_candidate_links(raw_links: list[str]) -> None:
+        for raw_link in raw_links:
+            normalized = _normalize_discovered_job_link(raw_link)
+            if not normalized:
+                continue
+            try:
+                parsed = urlsplit(normalized)
+            except Exception:
+                continue
+            host = str(parsed.netloc or "").strip().lower()
+            path = str(parsed.path or "").strip().lower()
+            if safe_host_keyword and safe_host_keyword not in host:
+                continue
+            if safe_path_keyword and safe_path_keyword not in path:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(normalized)
+            if len(deduped) >= limit:
+                return
+
+    brave_request_url = "https://search.brave.com/search?" + urlencode({"q": safe_query, "source": "web"})
+    brave_request = Request(
+        brave_request_url,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(brave_request, timeout=max(4, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+            brave_html = _decode_http_body(response.read())
+    except Exception:
+        brave_html = ""
+
+    if brave_html:
+        brave_links = re.findall(r"https?://[^\s\"'<>]+", brave_html, flags=re.IGNORECASE)
+        _append_candidate_links([str(item) for item in brave_links])
+
+    # Fallback for temporary Brave throttling.
+    if len(deduped) < limit:
+        ddg_request_url = "https://duckduckgo.com/html/?" + urlencode({"q": safe_query})
+        ddg_request = Request(
+            ddg_request_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(ddg_request, timeout=max(4, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                ddg_html = _decode_http_body(response.read())
+        except Exception:
+            ddg_html = ""
+        if ddg_html:
+            direct_links = re.findall(r"https?://[^\s\"'<>]+", ddg_html, flags=re.IGNORECASE)
+            _append_candidate_links([str(item) for item in direct_links])
+            encoded_links = re.findall(r"uddg=([^&\"'<>]+)", ddg_html, flags=re.IGNORECASE)
+            decoded_links = [unquote(str(item or "").strip()) for item in encoded_links if str(item or "").strip()]
+            _append_candidate_links(decoded_links)
+
+    return tuple(deduped)
+
+
+def fetch_smartrecruiters_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching SmartRecruiters careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    cache_bucket = int(time.time() // max(1, JOB_SEARCH_FETCH_CACHE_TTL_SECONDS))
+    cached_jobs, note = _fetch_smartrecruiters_network_jobs_cached(safe_role, safe_location, limit, cache_bucket)
+    return [dict(item) for item in cached_jobs if isinstance(item, dict)], note
+
+
+@lru_cache(maxsize=128)
+def _fetch_smartrecruiters_network_jobs_cached(
+    role_query: str,
+    preferred_location: str,
+    max_results: int,
+    cache_bucket: int,
+) -> tuple[tuple[dict[str, Any], ...], str]:
+    _ = cache_bucket
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_board_limit = max(2, min(6, int(limit / max(1, len(SMARTRECRUITERS_COMPANY_SLUGS))) + 1))
+
+    def _fetch_company(company_slug: str, company_name: str) -> list[dict[str, Any]]:
+        request_url = (
+            f"https://api.smartrecruiters.com/v1/companies/{quote(company_slug)}/postings?"
+            + urlencode(
+                {
+                    "limit": str(max(8, per_board_limit * 4)),
+                    "offset": "0",
+                    "q": safe_role,
+                }
+            )
+        )
+        request = Request(
+            request_url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "PyStreamlineAI/1.0",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                payload = json.loads(_decode_http_body(response.read()))
+        except Exception:
+            return []
+        rows = payload.get("content", []) if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            rows = []
+
+        company_jobs: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            title = strip_html_tags(str(item.get("name", "")).strip())
+            posting_uuid = str(item.get("uuid", "")).strip()
+            if not title or not posting_uuid:
+                continue
+            apply_url = f"https://jobs.smartrecruiters.com/{company_slug}/{posting_uuid}"
+            if apply_url in seen_urls:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+
+            location_obj = item.get("location", {})
+            location_text = ""
+            if isinstance(location_obj, dict):
+                location_text = strip_html_tags(str(location_obj.get("fullLocation", "")).strip())
+                if not location_text:
+                    location_parts = [
+                        strip_html_tags(str(location_obj.get("city", "")).strip()),
+                        strip_html_tags(str(location_obj.get("region", "")).strip()),
+                        strip_html_tags(str(location_obj.get("country", "")).strip()),
+                    ]
+                    location_text = ", ".join(part for part in location_parts if part)
+            location_text = location_text or "Location not listed"
+            if safe_location and location_text != "Location not listed":
+                if not _location_matches_preference(safe_location, location_text):
+                    continue
+
+            department_obj = item.get("department", {})
+            function_obj = item.get("function", {})
+            employment_obj = item.get("typeOfEmployment", {})
+            experience_obj = item.get("experienceLevel", {})
+            description = " | ".join(
+                part
+                for part in [
+                    strip_html_tags(str(department_obj.get("label", "")).strip()) if isinstance(department_obj, dict) else "",
+                    strip_html_tags(str(function_obj.get("label", "")).strip()) if isinstance(function_obj, dict) else "",
+                    strip_html_tags(str(employment_obj.get("label", "")).strip()) if isinstance(employment_obj, dict) else "",
+                    strip_html_tags(str(experience_obj.get("label", "")).strip()) if isinstance(experience_obj, dict) else "",
+                ]
+                if part
+            )
+            if not job_matches_role_query(safe_role, title, description, company_name):
+                continue
+
+            seen_urls.add(apply_url)
+            company_jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": description or "Direct posting from SmartRecruiters board.",
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers (SmartRecruiters)",
+                    "employment_type": strip_html_tags(
+                        str(employment_obj.get("label", "")).strip() if isinstance(employment_obj, dict) else ""
+                    ),
+                    "contract_type": "",
+                    "posted_at": normalize_posted_at(str(item.get("releasedDate", "")).strip()),
+                }
+            )
+            if len(company_jobs) >= per_board_limit:
+                break
+        return company_jobs
+
+    ordered_results: list[list[dict[str, Any]] | None] = [None] * len(SMARTRECRUITERS_COMPANY_SLUGS)
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(SMARTRECRUITERS_COMPANY_SLUGS)))) as executor:
+        future_to_index = {
+            executor.submit(_fetch_company, slug, company): index
+            for index, (slug, company) in enumerate(SMARTRECRUITERS_COMPANY_SLUGS)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                jobs = future.result()
+            except Exception:
+                jobs = []
+            if isinstance(jobs, list) and jobs:
+                ordered_results[index] = [job for job in jobs if isinstance(job, dict)]
+
+    provider_batches = [batch for batch in ordered_results if isinstance(batch, list) and batch]
+    if not provider_batches:
+        return tuple(), "No SmartRecruiters roles matched the current role/location filter."
+    deduped = _merge_provider_batches_round_robin(provider_batches, limit)
+    if not deduped:
+        return tuple(), "No SmartRecruiters roles matched the current role/location filter."
+    return tuple(dict(item) for item in deduped), ""
+
+
+def fetch_jobvite_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Jobvite careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_board_limit = max(2, min(6, int(limit / max(1, len(JOBVITE_COMPANY_BOARDS))) + 2))
+    jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    for board_slug, company_name in JOBVITE_COMPANY_BOARDS:
+        query_pairs: list[tuple[str, str]] = [("nl", "1"), ("q", safe_role)]
+        if safe_location:
+            query_pairs.append(("l", safe_location))
+        request_url = f"https://jobs.jobvite.com/{quote(board_slug)}/search?{urlencode(query_pairs)}"
+        request = Request(
+            request_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                response_text = _decode_http_body(response.read())
+        except Exception:
+            continue
+
+        row_matches = re.findall(
+            r'(?is)<tr[^>]*>\s*<td[^>]*class=\"[^\"]*jv-job-list-name[^\"]*\"[^>]*>(.*?)</td>\s*'
+            r'<td[^>]*class=\"[^\"]*jv-job-list-location[^\"]*\"[^>]*>(.*?)</td>\s*</tr>',
+            response_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        source_count = 0
+        for title_cell, location_cell in row_matches:
+            link_match = re.search(
+                rf'href=\"([^\"]*/{re.escape(board_slug)}/job/[^\"]+)\"[^>]*>(.*?)</a>',
+                title_cell,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if not link_match:
+                continue
+            apply_url = urljoin(f"https://jobs.jobvite.com/{board_slug}/", html.unescape(str(link_match.group(1) or "")))
+            if not apply_url or apply_url in seen_urls:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+
+            title = strip_html_tags(html.unescape(str(link_match.group(2) or ""))).strip()
+            title = re.sub(r"\s+", " ", title).strip(" -|")
+            if not title:
+                continue
+            location_text = strip_html_tags(html.unescape(str(location_cell or ""))).strip()
+            location_text = re.sub(r"\s+", " ", location_text).strip() or "Location not listed"
+            if safe_location and location_text != "Location not listed":
+                if not _location_matches_preference(safe_location, location_text):
+                    continue
+            description = "Direct posting from Jobvite career portal."
+            if not job_matches_role_query(safe_role, title, description, company_name):
+                continue
+
+            seen_urls.add(apply_url)
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": description,
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers (Jobvite)",
+                    "employment_type": "",
+                    "contract_type": "",
+                    "posted_at": "",
+                }
+            )
+            source_count += 1
+            if source_count >= per_board_limit or len(jobs) >= limit:
+                break
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No Jobvite roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_breezyhr_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Breezy HR careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_board_limit = max(2, min(8, int(limit / max(1, len(BREEZY_HR_PUBLIC_BOARDS))) + 2))
+
+    jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for board_slug, company_name in BREEZY_HR_PUBLIC_BOARDS:
+        base_url = f"https://{board_slug}.breezy.hr/"
+        request = Request(
+            base_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                response_text = _decode_http_body(response.read())
+        except Exception:
+            continue
+        link_matches = re.findall(
+            r'href=\"([^\"]*/p/[^\"]+)\"[^>]*>(.*?)</a>',
+            response_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        source_count = 0
+        for raw_href, raw_title in link_matches:
+            apply_url = _normalize_discovered_job_link(urljoin(base_url, html.unescape(str(raw_href or "").strip())))
+            if apply_url.endswith("/apply"):
+                apply_url = apply_url[: -len("/apply")]
+            if not apply_url or apply_url in seen_urls:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+            title = _title_from_job_url_path(apply_url, fallback=f"{company_name} Role")
+            location_text = "Location not listed"
+            if "remote" in title.lower():
+                location_text = "Remote"
+            if safe_location and location_text not in {"Location not listed", "Remote"}:
+                if not _location_matches_preference(safe_location, location_text):
+                    continue
+            if not job_matches_role_query(safe_role, title, company_name):
+                continue
+            seen_urls.add(apply_url)
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": "Direct posting from Breezy HR career portal.",
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers (Breezy HR)",
+                    "employment_type": "",
+                    "contract_type": "",
+                    "posted_at": "",
+                }
+            )
+            source_count += 1
+            if source_count >= per_board_limit or len(jobs) >= limit:
+                break
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No Breezy HR roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_jazzhr_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching JazzHR careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_board_limit = max(2, min(10, int(limit / max(1, len(JAZZHR_PUBLIC_BOARDS))) + 2))
+
+    jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for board_slug, company_name in JAZZHR_PUBLIC_BOARDS:
+        base_url = f"https://{board_slug}.applytojob.com/apply/"
+        request = Request(
+            base_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                response_text = _decode_http_body(response.read())
+        except Exception:
+            continue
+        link_matches = re.findall(
+            r'href=\"([^\"]*/apply/[A-Za-z0-9]+/[^\"]+)\"[^>]*>(.*?)</a>',
+            response_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        source_count = 0
+        for raw_href, raw_title in link_matches:
+            apply_url = _normalize_discovered_job_link(urljoin(base_url, html.unescape(str(raw_href or "").strip())))
+            if not apply_url or apply_url in seen_urls:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+            title = strip_html_tags(html.unescape(str(raw_title or "").strip()))
+            title = re.sub(r"\s+", " ", title).strip(" -|")
+            title = title or _title_from_job_url_path(apply_url, fallback=f"{company_name} Role")
+            location_text = "Location not listed"
+            if "remote" in title.lower():
+                location_text = "Remote"
+            if safe_location and location_text not in {"Location not listed", "Remote"}:
+                if not _location_matches_preference(safe_location, location_text):
+                    continue
+            if not job_matches_role_query(safe_role, title, company_name):
+                continue
+            seen_urls.add(apply_url)
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": "Direct posting from JazzHR career portal.",
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers (JazzHR)",
+                    "employment_type": "",
+                    "contract_type": "",
+                    "posted_at": "",
+                }
+            )
+            source_count += 1
+            if source_count >= per_board_limit or len(jobs) >= limit:
+                break
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No JazzHR roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_teamtailor_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Teamtailor careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_board_limit = max(2, min(8, int(limit / max(1, len(TEAMTAILOR_PUBLIC_BOARDS))) + 2))
+
+    jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for board_slug, company_name in TEAMTAILOR_PUBLIC_BOARDS:
+        search_url = f"https://{board_slug}.teamtailor.com/jobs?{urlencode({'query': safe_role})}"
+        request = Request(
+            search_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                response_text = _decode_http_body(response.read())
+        except Exception:
+            continue
+
+        blocks = re.findall(r"(?is)<li[^>]*>\s*(.*?)\s*</li>", response_text, flags=re.IGNORECASE | re.DOTALL)
+        source_count = 0
+        for block in blocks:
+            link_match = re.search(
+                r'(?is)<a[^>]*href=\"([^\"]*?/jobs/[^\"]+)\"[^>]*>(.*?)</a>',
+                block,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if not link_match:
+                continue
+            raw_href = html.unescape(str(link_match.group(1) or "").strip())
+            apply_url = _normalize_discovered_job_link(urljoin(search_url, raw_href))
+            if not apply_url or apply_url in seen_urls:
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+
+            title = strip_html_tags(html.unescape(str(link_match.group(2) or "").strip()))
+            title = re.sub(r"\s+", " ", title).strip(" -|")
+            if not title:
+                continue
+
+            location_match = re.search(
+                r"(?is)&middot;\s*</span>\s*<span>([^<]+)</span>",
+                block,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            location_text = strip_html_tags(html.unescape(str(location_match.group(1) or "").strip())) if location_match else ""
+            location_text = re.sub(r"\s+", " ", location_text).strip() or "Location not listed"
+            if safe_location and location_text != "Location not listed":
+                if not _location_matches_preference(safe_location, location_text):
+                    continue
+
+            description_tokens: list[str] = []
+            span_texts = re.findall(r"(?is)<span[^>]*>(.*?)</span>", block, flags=re.IGNORECASE | re.DOTALL)
+            for raw_span in span_texts:
+                cleaned_span = strip_html_tags(html.unescape(str(raw_span or "").strip()))
+                cleaned_span = re.sub(r"\s+", " ", cleaned_span).strip(" -|")
+                if not cleaned_span:
+                    continue
+                lowered = cleaned_span.lower()
+                if lowered in {"·", "&middot;"}:
+                    continue
+                if cleaned_span == location_text:
+                    continue
+                description_tokens.append(cleaned_span)
+                if len(description_tokens) >= 3:
+                    break
+            description = " | ".join(description_tokens)
+            if not job_matches_role_query(safe_role, title, description, company_name):
+                continue
+
+            seen_urls.add(apply_url)
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": description or "Direct posting from Teamtailor career portal.",
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers (Teamtailor)",
+                    "employment_type": "",
+                    "contract_type": "",
+                    "posted_at": "",
+                }
+            )
+            source_count += 1
+            if source_count >= per_board_limit or len(jobs) >= limit:
+                break
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No Teamtailor roles matched the current role/location filter."
+    return jobs, ""
+
+
+def _normalize_oracle_cloud_portal_host(raw_host: str) -> str:
+    host_candidate = str(raw_host or "").strip()
+    if not host_candidate:
+        return ""
+    if host_candidate.startswith("http://") or host_candidate.startswith("https://"):
+        try:
+            parsed = urlsplit(host_candidate)
+            host_candidate = str(parsed.netloc or "").strip()
+        except Exception:
+            host_candidate = ""
+    host_candidate = host_candidate.split("/")[0].strip().lower().strip(".")
+    if not host_candidate or "oraclecloud.com" not in host_candidate:
+        return ""
+    return host_candidate
+
+
+def _normalize_oracle_cloud_site_number(raw_site_number: str) -> str:
+    clean_site = str(raw_site_number or "").strip().upper().replace("-", "_")
+    clean_site = re.sub(r"[^A-Z0-9_]", "", clean_site)
+    if not clean_site:
+        return ""
+    if not clean_site.startswith("CX_"):
+        return ""
+    if not re.fullmatch(r"CX_[A-Z0-9]+", clean_site):
+        return ""
+    return clean_site
+
+
+def _normalize_oracle_cloud_locale(raw_locale: str) -> str:
+    clean_locale = re.sub(r"[^a-z\-]", "", str(raw_locale or "").strip().lower())
+    return clean_locale or "en"
+
+
+def _clean_optional_job_text(raw_value: Any) -> str:
+    cleaned = strip_html_tags(str(raw_value or "").strip())
+    lowered = cleaned.lower()
+    if lowered in {"none", "null", "n/a", "na", "not applicable"}:
+        return ""
+    return cleaned
+
+
+def _build_oracle_cloud_apply_url(
+    *,
+    host: str,
+    site_number: str,
+    requisition_id: str,
+    locale: str,
+) -> str:
+    safe_host = _normalize_oracle_cloud_portal_host(host)
+    safe_site = _normalize_oracle_cloud_site_number(site_number)
+    safe_req_id = re.sub(r"[^0-9A-Za-z_-]", "", str(requisition_id or "").strip())
+    safe_locale = _normalize_oracle_cloud_locale(locale)
+    if not safe_host or not safe_site or not safe_req_id:
+        return ""
+    return (
+        f"https://{safe_host}/hcmUI/CandidateExperience/{safe_locale}/sites/"
+        f"{safe_site}/requisitions/job/{safe_req_id}"
+    )
+
+
+def _extract_oracle_cloud_portal_from_link(job_url: str) -> dict[str, str] | None:
+    normalized = _normalize_discovered_job_link(job_url)
+    if not normalized:
+        return None
+    try:
+        parsed = urlsplit(normalized)
+    except Exception:
+        return None
+    host = _normalize_oracle_cloud_portal_host(str(parsed.netloc or ""))
+    if not host:
+        return None
+    path = str(parsed.path or "").strip()
+    if "/candidateexperience/" not in path.lower():
+        return None
+    site_match = re.search(
+        r"/hcmui/candidateexperience/([^/]+)/sites/([^/]+)/",
+        path,
+        flags=re.IGNORECASE,
+    )
+    if not site_match:
+        return None
+    locale = _normalize_oracle_cloud_locale(site_match.group(1))
+    site_number = _normalize_oracle_cloud_site_number(site_match.group(2))
+    if not site_number:
+        return None
+    return {
+        "host": host,
+        "site_number": site_number,
+        "locale": locale,
+        "company": _friendly_company_name_from_host(host),
+    }
+
+
+def _parse_oracle_cloud_portal_entry(raw_entry: Any) -> dict[str, str] | None:
+    if isinstance(raw_entry, dict):
+        host = _normalize_oracle_cloud_portal_host(
+            str(
+                raw_entry.get("host")
+                or raw_entry.get("domain")
+                or raw_entry.get("tenant")
+                or raw_entry.get("base_url")
+                or ""
+            ).strip()
+        )
+        site_number = _normalize_oracle_cloud_site_number(
+            str(
+                raw_entry.get("site_number")
+                or raw_entry.get("site")
+                or raw_entry.get("siteNumber")
+                or ""
+            ).strip()
+        )
+        if not host or not site_number:
+            return None
+        company = " ".join(str(raw_entry.get("company", "")).split()) or _friendly_company_name_from_host(host)
+        locale = _normalize_oracle_cloud_locale(str(raw_entry.get("locale", "en")).strip())
+        return {
+            "host": host,
+            "site_number": site_number,
+            "locale": locale,
+            "company": company,
+        }
+
+    text = str(raw_entry or "").strip()
+    if not text:
+        return None
+    if "|" in text:
+        parts = [part.strip() for part in text.split("|")]
+        host = _normalize_oracle_cloud_portal_host(parts[0] if len(parts) >= 1 else "")
+        site_number = _normalize_oracle_cloud_site_number(parts[1] if len(parts) >= 2 else "")
+        if not host or not site_number:
+            return None
+        company = " ".join((parts[2] if len(parts) >= 3 else "").split()) or _friendly_company_name_from_host(host)
+        locale = _normalize_oracle_cloud_locale(parts[3] if len(parts) >= 4 else "en")
+        return {
+            "host": host,
+            "site_number": site_number,
+            "locale": locale,
+            "company": company,
+        }
+    return _extract_oracle_cloud_portal_from_link(text)
+
+
+def _load_oracle_cloud_portals_from_config() -> list[dict[str, str]]:
+    configured_raw = get_config_value(
+        "JOB_SEARCH_ORACLE_CLOUD_PORTALS",
+        "jobs",
+        "oracle_cloud_portals",
+        "",
+    ).strip()
+    if not configured_raw:
+        return []
+
+    parsed_items: list[Any] = []
+    try:
+        parsed_json = json.loads(configured_raw)
+    except Exception:
+        parsed_json = None
+
+    if isinstance(parsed_json, list):
+        parsed_items = list(parsed_json)
+    elif isinstance(parsed_json, dict):
+        candidate_list = parsed_json.get("portals", [])
+        if isinstance(candidate_list, list):
+            parsed_items = list(candidate_list)
+    else:
+        parsed_items = [segment.strip() for segment in re.split(r"[;\n]+", configured_raw) if segment.strip()]
+
+    parsed_portals: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in parsed_items:
+        parsed = _parse_oracle_cloud_portal_entry(entry)
+        if not isinstance(parsed, dict):
+            continue
+        host = _normalize_oracle_cloud_portal_host(str(parsed.get("host", "")).strip())
+        site_number = _normalize_oracle_cloud_site_number(str(parsed.get("site_number", "")).strip())
+        if not host or not site_number:
+            continue
+        key = (host, site_number)
+        if key in seen:
+            continue
+        seen.add(key)
+        parsed_portals.append(
+            {
+                "host": host,
+                "site_number": site_number,
+                "locale": _normalize_oracle_cloud_locale(str(parsed.get("locale", "en")).strip()),
+                "company": " ".join(str(parsed.get("company", "")).split()) or _friendly_company_name_from_host(host),
+            }
+        )
+    return parsed_portals
+
+
+@lru_cache(maxsize=192)
+def _discover_oracle_cloud_portals_cached(
+    role_query: str,
+    preferred_location: str,
+    cache_bucket: int,
+) -> tuple[tuple[str, str, str, str], ...]:
+    _ = cache_bucket
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return tuple()
+
+    queries: list[str] = [
+        "oraclecloud.com hcmUI CandidateExperience requisitions job",
+        f"{safe_role} oraclecloud.com hcmUI CandidateExperience requisitions job",
+        f"{safe_role} site:oraclecloud.com CandidateExperience requisitions",
+    ]
+    if safe_location:
+        queries.append(f"{safe_role} {safe_location} oraclecloud.com CandidateExperience requisitions job")
+
+    discovered_portals: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for query in queries:
+        links = _discover_direct_job_links_via_brave_cached(
+            query=query,
+            host_keyword="oraclecloud.com",
+            path_keyword="/hcmui/candidateexperience/",
+            max_links=90,
+            cache_bucket=int(cache_bucket or 0),
+        )
+        for raw_link in links:
+            portal = _extract_oracle_cloud_portal_from_link(raw_link)
+            if not isinstance(portal, dict):
+                continue
+            host = _normalize_oracle_cloud_portal_host(str(portal.get("host", "")).strip())
+            site_number = _normalize_oracle_cloud_site_number(str(portal.get("site_number", "")).strip())
+            if not host or not site_number:
+                continue
+            key = (host, site_number)
+            if key in seen:
+                continue
+            seen.add(key)
+            discovered_portals.append(
+                (
+                    host,
+                    site_number,
+                    _normalize_oracle_cloud_locale(str(portal.get("locale", "en")).strip()),
+                    " ".join(str(portal.get("company", "")).split()) or _friendly_company_name_from_host(host),
+                )
+            )
+            if len(discovered_portals) >= 28:
+                return tuple(discovered_portals)
+    return tuple(discovered_portals)
+
+
+def _build_oracle_cloud_portal_candidates(
+    *,
+    role_query: str,
+    preferred_location: str,
+    cache_bucket: int,
+    max_portals: int,
+) -> list[dict[str, str]]:
+    safe_max = max(4, min(32, int(max_portals or 16)))
+    candidates: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _append_portal(raw_portal: Any) -> None:
+        parsed = _parse_oracle_cloud_portal_entry(raw_portal)
+        if not isinstance(parsed, dict):
+            return
+        host = _normalize_oracle_cloud_portal_host(str(parsed.get("host", "")).strip())
+        site_number = _normalize_oracle_cloud_site_number(str(parsed.get("site_number", "")).strip())
+        if not host or not site_number:
+            return
+        key = (host, site_number)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(
+            {
+                "host": host,
+                "site_number": site_number,
+                "locale": _normalize_oracle_cloud_locale(str(parsed.get("locale", "en")).strip()),
+                "company": " ".join(str(parsed.get("company", "")).split()) or _friendly_company_name_from_host(host),
+            }
+        )
+
+    for portal in ORACLE_RECRUITING_DEFAULT_PORTALS:
+        _append_portal(portal)
+        if len(candidates) >= safe_max:
+            return candidates[:safe_max]
+
+    for portal in _load_oracle_cloud_portals_from_config():
+        _append_portal(portal)
+        if len(candidates) >= safe_max:
+            return candidates[:safe_max]
+
+    discovered_portals = _discover_oracle_cloud_portals_cached(
+        role_query=role_query,
+        preferred_location=preferred_location,
+        cache_bucket=int(cache_bucket or 0),
+    )
+    for host, site_number, locale, company in discovered_portals:
+        _append_portal(
+            {
+                "host": host,
+                "site_number": site_number,
+                "locale": locale,
+                "company": company,
+            }
+        )
+        if len(candidates) >= safe_max:
+            return candidates[:safe_max]
+    return candidates[:safe_max]
+
+
+def _fetch_oracle_cloud_portal_jobs(
+    portal: dict[str, str],
+    role_query: str,
+    preferred_location: str,
+    *,
+    per_portal_limit: int,
+) -> list[dict[str, Any]]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    host = _normalize_oracle_cloud_portal_host(str(portal.get("host", "")).strip())
+    site_number = _normalize_oracle_cloud_site_number(str(portal.get("site_number", "")).strip())
+    locale = _normalize_oracle_cloud_locale(str(portal.get("locale", "en")).strip())
+    portal_company = " ".join(str(portal.get("company", "")).split()) or _friendly_company_name_from_host(host)
+    if not safe_role or not host or not site_number:
+        return []
+
+    target_per_portal = max(2, min(12, int(per_portal_limit or 4)))
+    search_page_size = max(10, min(40, target_per_portal * 4))
+    request_timeout = max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))
+
+    jobs: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str]] = set()
+    for offset in (0, search_page_size):
+        finder_segments: list[str] = [
+            f"siteNumber={site_number}",
+            f"keyword={safe_role}",
+            f"limit={search_page_size}",
+            f"offset={offset}",
+        ]
+        if safe_location:
+            finder_segments.insert(2, f"location={safe_location}")
+        finder_value = "findReqs;" + ",".join(finder_segments)
+        request_url = (
+            f"https://{host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions?"
+            + urlencode(
+                {
+                    "onlyData": "true",
+                    "expand": "all",
+                    "finder": finder_value,
+                }
+            )
+        )
+        request = Request(
+            request_url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "PyStreamlineAI/1.0",
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=request_timeout) as response:
+                payload = json.loads(_decode_http_body(response.read()))
+        except Exception:
+            if offset <= 0:
+                return []
+            break
+
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        if not isinstance(items, list) or not items:
+            break
+        first_item = items[0] if isinstance(items[0], dict) else {}
+        requisition_list = first_item.get("requisitionList", []) if isinstance(first_item, dict) else []
+        if not isinstance(requisition_list, list) or not requisition_list:
+            break
+
+        for req in requisition_list:
+            if not isinstance(req, dict):
+                continue
+            req_id = str(req.get("Id", "")).strip()
+            title = strip_html_tags(str(req.get("Title", "")).strip())
+            if not req_id or not title:
+                continue
+            location_text = _clean_optional_job_text(req.get("PrimaryLocation")) or "Location not listed"
+            if safe_location and location_text != "Location not listed":
+                if not _location_matches_preference(safe_location, location_text):
+                    continue
+
+            legal_employer = _clean_optional_job_text(req.get("LegalEmployer"))
+            company_name = legal_employer or portal_company
+            source_company = company_name or portal_company
+            summary = _clean_optional_job_text(req.get("ShortDescriptionStr"))
+            family = _clean_optional_job_text(req.get("JobFamily"))
+            function = _clean_optional_job_text(req.get("JobFunction"))
+            description = " | ".join(part for part in [summary, family, function] if part)
+            if not description:
+                description = "Direct posting from Oracle Recruiting Cloud career portal."
+            if not job_matches_role_query(safe_role, title, description, company_name):
+                continue
+
+            apply_url = _build_oracle_cloud_apply_url(
+                host=host,
+                site_number=site_number,
+                requisition_id=req_id,
+                locale=locale,
+            )
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+
+            dedupe_key = (req_id, apply_url.lower())
+            if dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
+
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": description,
+                    "apply_url": apply_url,
+                    "source": f"{source_company} Careers (Oracle Recruiting Cloud)",
+                    "employment_type": _clean_optional_job_text(
+                        req.get("JobType")
+                        or req.get("WorkerType")
+                        or req.get("JobSchedule")
+                        or req.get("WorkplaceType")
+                        or ""
+                    ),
+                    "contract_type": _clean_optional_job_text(req.get("ContractType")),
+                    "posted_at": normalize_posted_at(str(req.get("PostedDate", "")).strip()),
+                }
+            )
+            if len(jobs) >= target_per_portal:
+                break
+
+        if len(jobs) >= target_per_portal:
+            break
+        has_more = bool(payload.get("hasMore", False))
+        if not has_more:
+            break
+    return jobs
+
+
+def fetch_oracle_recruiting_cloud_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Oracle Recruiting Cloud careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    cache_bucket = int(time.time() // max(1, JOB_SEARCH_FETCH_CACHE_TTL_SECONDS))
+    cached_jobs, note = _fetch_oracle_recruiting_cloud_network_jobs_cached(
+        safe_role,
+        safe_location,
+        limit,
+        cache_bucket,
+    )
+    return [dict(item) for item in cached_jobs if isinstance(item, dict)], note
+
+
+@lru_cache(maxsize=128)
+def _fetch_oracle_recruiting_cloud_network_jobs_cached(
+    role_query: str,
+    preferred_location: str,
+    max_results: int,
+    cache_bucket: int,
+) -> tuple[tuple[dict[str, Any], ...], str]:
+    _ = cache_bucket
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    max_portals = max(10, min(32, int(limit / 2) + 8))
+    portal_candidates = _build_oracle_cloud_portal_candidates(
+        role_query=safe_role,
+        preferred_location=safe_location,
+        cache_bucket=int(cache_bucket or 0),
+        max_portals=max_portals,
+    )
+    if not portal_candidates:
+        return tuple(), "No Oracle Recruiting Cloud clients were discoverable for this search."
+
+    per_portal_limit = max(2, min(8, int(limit / max(1, len(portal_candidates))) + 2))
+    ordered_results: list[list[dict[str, Any]] | None] = [None] * len(portal_candidates)
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(portal_candidates)))) as executor:
+        future_to_index = {
+            executor.submit(
+                _fetch_oracle_cloud_portal_jobs,
+                portal,
+                safe_role,
+                safe_location,
+                per_portal_limit=per_portal_limit,
+            ): index
+            for index, portal in enumerate(portal_candidates)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                jobs = future.result()
+            except Exception:
+                jobs = []
+            if isinstance(jobs, list) and jobs:
+                ordered_results[index] = [job for job in jobs if isinstance(job, dict)]
+
+    provider_batches = [batch for batch in ordered_results if isinstance(batch, list) and batch]
+    if not provider_batches:
+        return tuple(), "No Oracle Recruiting Cloud roles matched the current role/location filter."
+    deduped = _merge_provider_batches_round_robin(provider_batches, limit)
+    if not deduped:
+        return tuple(), "No Oracle Recruiting Cloud roles matched the current role/location filter."
+    source_count = len(portal_candidates)
+    return tuple(dict(item) for item in deduped), f"Oracle Recruiting Cloud clients scanned: {source_count}."
+
+
+def fetch_successfactors_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching SuccessFactors careers."
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_source_limit = max(1, min(4, int(limit / max(1, len(SUCCESSFACTORS_PUBLIC_SEARCH_PORTALS))) + 1))
+    jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+
+    for portal in SUCCESSFACTORS_PUBLIC_SEARCH_PORTALS:
+        company_name = " ".join(str(portal.get("company", "")).split())
+        search_url = str(portal.get("search_url", "")).strip()
+        if not company_name or not search_url:
+            continue
+        role_param = str(portal.get("role_param", "")).strip() or "q"
+        location_param = str(portal.get("location_param", "")).strip() or "locationsearch"
+        query_pairs: list[tuple[str, str]] = [(role_param, safe_role)]
+        if safe_location:
+            query_pairs.append((location_param, safe_location))
+        request_url = f"{search_url}?{urlencode(query_pairs)}"
+        request = Request(
+            request_url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+            },
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=max(5, min(10, JOB_SEARCH_API_TIMEOUT_SECONDS))) as response:
+                response_text = _decode_http_body(response.read())
+        except Exception:
+            continue
+
+        link_matches = re.findall(
+            r'href=\"([^\"]*(?:/job/[^\"]+|career\?career_ns=job_listing[^\"]*))\"[^>]*>(.*?)</a>',
+            response_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        source_count = 0
+        for raw_href, raw_title in link_matches:
+            apply_url = urljoin(search_url, html.unescape(str(raw_href or "").strip()))
+            if not apply_url or apply_url in seen_urls:
+                continue
+            if "/services/rss/" in apply_url.lower():
+                continue
+            if not _looks_like_direct_job_posting_url(apply_url):
+                continue
+            title = strip_html_tags(html.unescape(str(raw_title or "").strip()))
+            title = re.sub(r"\s+", " ", title).strip(" -|")
+            title = title or _title_from_job_url_path(apply_url, fallback=f"{company_name} Role")
+            location_text = "Location not listed"
+            if safe_location and location_text != "Location not listed":
+                if not _location_matches_preference(safe_location, location_text):
+                    continue
+            if not job_matches_role_query(safe_role, title, company_name):
+                continue
+            seen_urls.add(apply_url)
+            jobs.append(
+                {
+                    "title": title,
+                    "company": company_name,
+                    "location": location_text,
+                    "description": "Direct posting from SAP SuccessFactors career portal.",
+                    "apply_url": apply_url,
+                    "source": f"{company_name} Careers (SuccessFactors)",
+                    "employment_type": "",
+                    "contract_type": "",
+                    "posted_at": "",
+                }
+            )
+            source_count += 1
+            if source_count >= per_source_limit or len(jobs) >= limit:
+                break
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No SuccessFactors roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_deloitte_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Deloitte jobs."
+
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    path_segment = f"/{quote(safe_location)}" if safe_location else ""
+    query_pairs: list[tuple[str, str]] = [
+        ("jobSort", "relevancy"),
+        ("jobRecordsPerPage", str(max(limit * 2, 15))),
+        ("keyword", safe_role),
+    ]
+    if safe_location:
+        query_pairs.append(("location", safe_location))
+    request_url = (
+        f"https://apply.deloitte.com/en_US/careers/SearchJobs{path_segment}/feed/?"
+        f"{urlencode(query_pairs)}"
+    )
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+            "User-Agent": "PyStreamlineAI/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+            response_text = _decode_http_body(response.read())
+        root = ET.fromstring(response_text)
+    except HTTPError as ex:
+        return [], f"Deloitte careers feed error ({int(ex.code)})."
+    except URLError:
+        return [], "Deloitte careers feed connection failed."
+    except Exception:
+        return [], "Could not parse Deloitte careers feed."
+
+    items = root.findall(".//item")
+    if not isinstance(items, list):
+        items = []
+
+    jobs: list[dict[str, Any]] = []
+    for item in items:
+        title = str(item.findtext("title") or "").strip()
+        apply_url = str(item.findtext("link") or "").strip()
+        description = strip_html_tags(str(item.findtext("description") or "").strip())
+        posted_at = normalize_posted_at(item.findtext("pubDate") or "")
+        if not title or not apply_url:
+            continue
+        if not _looks_like_direct_job_posting_url(apply_url):
+            continue
+        if not job_matches_role_query(safe_role, title, description, "Deloitte"):
+            continue
+
+        inferred_location = "Location not listed"
+        location_match = re.search(r",\s*([A-Za-z .'-]+,\s*[A-Z]{2})\.?$", title)
+        if location_match:
+            inferred_location = location_match.group(1).strip()
+        if safe_location:
+            inferred_location = safe_location
+        if safe_location and not _location_matches_preference(safe_location, inferred_location):
+            continue
+
+        jobs.append(
+            {
+                "title": title,
+                "company": "Deloitte",
+                "location": inferred_location,
+                "description": description,
+                "apply_url": apply_url,
+                "source": "Deloitte Careers",
+                "employment_type": "",
+                "contract_type": "",
+                "posted_at": posted_at,
+            }
+        )
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No Deloitte roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_kpmg_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching KPMG jobs."
+
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    query_pairs: list[tuple[str, str]] = [("keywords", safe_role)]
+    if safe_location:
+        query_pairs.append(("location", safe_location))
+    request_url = f"https://www.kpmguscareers.com/job-search?{urlencode(query_pairs)}"
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            ),
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+            response_text = _decode_http_body(response.read())
+    except HTTPError as ex:
+        return [], f"KPMG careers search error ({int(ex.code)})."
+    except URLError:
+        return [], "KPMG careers search connection failed."
+    except Exception:
+        return [], "Could not parse KPMG careers response."
+
+    item_blocks = re.findall(
+        r"<div[^>]*class=\"[^\"]*\bsearch--item\b[^\"]*\"[^>]*>(.*?)</a>",
+        response_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not item_blocks:
+        return [], "No KPMG roles matched the current role/location filter."
+
+    jobs: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for block in item_blocks:
+        href_match = re.search(r"href=\"([^\"]*jobdetail/\?jobId=\d+)\"", block, flags=re.IGNORECASE)
+        if not href_match:
+            continue
+        apply_url = urljoin("https://www.kpmguscareers.com", html.unescape(href_match.group(1)))
+        if not apply_url or apply_url in seen_urls:
+            continue
+        if not _looks_like_direct_job_posting_url(apply_url):
+            continue
+        seen_urls.add(apply_url)
+
+        title_match = re.search(r"<div[^>]*class=\"[^\"]*\bh4\b[^\"]*\"[^>]*>(.*?)</div>", block, flags=re.IGNORECASE | re.DOTALL)
+        if not title_match:
+            title_match = re.search(
+                r"<div[^>]*class=\"[^\"]*\bh5\b[^\"]*\"[^>]*>(.*?)</div>",
+                block,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        title = strip_html_tags(html.unescape(title_match.group(1) if title_match else "")).strip()
+        title = re.sub(r"\s+", " ", title).strip(" -|")
+        if not title:
+            continue
+
+        location_candidates = re.findall(
+            r"<div[^>]*class=\"[^\"]*text-xs text-dark-grey[^\"]*\"[^>]*>(.*?)</div>",
+            block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        resolved_location = "Location not listed"
+        for candidate in location_candidates:
+            cleaned = strip_html_tags(html.unescape(candidate)).strip()
+            if not cleaned:
+                continue
+            if "|" in cleaned:
+                resolved_location = cleaned.split("|")[-1].strip() or resolved_location
+            elif "," in cleaned:
+                resolved_location = cleaned
+        if safe_location and not _location_matches_preference(safe_location, resolved_location):
+            continue
+
+        domain_match = re.search(
+            r"<div[^>]*class=\"[^\"]*eyebrow text-blue[^\"]*\"[^>]*>(.*?)</div>",
+            block,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        description = strip_html_tags(html.unescape(domain_match.group(1) if domain_match else "")).strip()
+        if not job_matches_role_query(safe_role, title, description, "KPMG"):
+            continue
+
+        jobs.append(
+            {
+                "title": title,
+                "company": "KPMG",
+                "location": resolved_location,
+                "description": description,
+                "apply_url": apply_url,
+                "source": "KPMG Careers",
+                "employment_type": "",
+                "contract_type": "",
+                "posted_at": "",
+            }
+        )
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No KPMG roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_bankofamerica_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching Bank of America jobs."
+
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    params: list[tuple[str, str]] = [
+        ("start", "0"),
+        ("rows", str(max(limit * 2, 10))),
+        ("search", "jobsByKeyword"),
+        ("term", safe_role),
+    ]
+    if safe_location:
+        params.append(("searchstring", safe_location))
+
+    request_url = f"https://careers.bankofamerica.com/services/jobssearchservlet?{urlencode(params)}"
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "PyStreamlineAI/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+            response_text = _decode_http_body(response.read())
+        raw_payload = json.loads(response_text)
+    except HTTPError as ex:
+        return [], f"Bank of America careers API error ({int(ex.code)})."
+    except URLError:
+        return [], "Bank of America careers API connection failed."
+    except Exception:
+        return [], "Could not parse Bank of America careers response."
+
+    raw_jobs = raw_payload.get("jobsList", []) if isinstance(raw_payload, dict) else []
+    if not isinstance(raw_jobs, list):
+        raw_jobs = []
+
+    jobs: list[dict[str, Any]] = []
+    for item in raw_jobs:
+        if not isinstance(item, dict):
+            continue
+        title = strip_html_tags(str(item.get("postingTitle", "")).strip())
+        if not title:
+            continue
+        city = strip_html_tags(str(item.get("city", "")).strip())
+        state = strip_html_tags(str(item.get("state", "")).strip())
+        country = strip_html_tags(str(item.get("country", "")).strip())
+        location = ", ".join(part for part in [city, state, country] if part) or "Location not listed"
+        if safe_location and not _location_matches_preference(safe_location, location):
+            continue
+
+        detail_path = str(item.get("jcrURL", "")).strip()
+        apply_url = urljoin("https://careers.bankofamerica.com", detail_path)
+        if not apply_url or not _looks_like_direct_job_posting_url(apply_url):
+            continue
+
+        description_parts = [
+            strip_html_tags(str(item.get("family", "")).strip()),
+            strip_html_tags(str(item.get("area", "")).strip()),
+            strip_html_tags(str(item.get("lob", "")).strip()),
+        ]
+        description = " | ".join(part for part in description_parts if part)
+
+        jobs.append(
+            {
+                "title": title,
+                "company": strip_html_tags(str(item.get("brand", "")).strip()) or "Bank of America",
+                "location": location,
+                "description": description,
+                "apply_url": apply_url,
+                "source": "Bank of America Careers",
+                "employment_type": strip_html_tags(str(item.get("workShift", "")).strip()),
+                "contract_type": "",
+                "posted_at": normalize_posted_at(str(item.get("postedDate", "")).strip()),
+            }
+        )
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No Bank of America roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_jpmorgan_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching JPMorgan jobs."
+
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    finder_segments = [f"keyword={safe_role}", "siteNumber=CX_1001", f"limit={limit}", "offset=0"]
+    if safe_location:
+        finder_segments.insert(1, f"location={safe_location}")
+    finder_value = "findReqs;" + ",".join(finder_segments)
+
+    request_url = (
+        "https://jpmc.fa.oraclecloud.com/hcmRestApi/resources/latest/recruitingCEJobRequisitions?"
+        + urlencode(
+            {
+                "onlyData": "true",
+                "expand": "all",
+                "finder": finder_value,
+            }
+        )
+    )
+    request = Request(
+        request_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "PyStreamlineAI/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=JOB_SEARCH_API_TIMEOUT_SECONDS) as response:
+            response_text = _decode_http_body(response.read())
+        raw_payload = json.loads(response_text)
+    except HTTPError as ex:
+        return [], f"JPMorgan careers API error ({int(ex.code)})."
+    except URLError:
+        return [], "JPMorgan careers API connection failed."
+    except Exception:
+        return [], "Could not parse JPMorgan careers response."
+
+    items = raw_payload.get("items", []) if isinstance(raw_payload, dict) else []
+    if not isinstance(items, list) or not items:
+        return [], "No JPMorgan roles matched the current role/location filter."
+
+    first_item = items[0] if isinstance(items[0], dict) else {}
+    requisition_list = first_item.get("requisitionList", []) if isinstance(first_item, dict) else []
+    if not isinstance(requisition_list, list):
+        requisition_list = []
+
+    jobs: list[dict[str, Any]] = []
+    for req in requisition_list:
+        if not isinstance(req, dict):
+            continue
+        title = strip_html_tags(str(req.get("Title", "")).strip())
+        if not title:
+            continue
+        location = strip_html_tags(str(req.get("PrimaryLocation", "")).strip()) or "Location not listed"
+        if safe_location and not _location_matches_preference(safe_location, location):
+            continue
+
+        req_id = str(req.get("Id", "")).strip()
+        if not req_id:
+            continue
+        apply_url = (
+            "https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/job/"
+            + req_id
+        )
+        if not _looks_like_direct_job_posting_url(apply_url):
+            continue
+
+        summary = strip_html_tags(str(req.get("ShortDescriptionStr", "")).strip())
+        family = strip_html_tags(str(req.get("JobFamily", "")).strip())
+        function = strip_html_tags(str(req.get("JobFunction", "")).strip())
+        description = " | ".join(part for part in [summary, family, function] if part)
+
+        jobs.append(
+            {
+                "title": title,
+                "company": "JPMorgan Chase",
+                "location": location,
+                "description": description,
+                "apply_url": apply_url,
+                "source": "JPMorgan Careers",
+                "employment_type": strip_html_tags(str(req.get("JobType", "")).strip())
+                or strip_html_tags(str(req.get("WorkplaceType", "")).strip()),
+                "contract_type": strip_html_tags(str(req.get("ContractType", "")).strip()),
+                "posted_at": normalize_posted_at(str(req.get("PostedDate", "")).strip()),
+            }
+        )
+        if len(jobs) >= limit:
+            break
+
+    if not jobs:
+        return [], "No JPMorgan roles matched the current role/location filter."
+    return jobs, ""
+
+
+def fetch_official_portal_network_jobs(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    safe_role = " ".join(str(role_query or "").split())
+    safe_location = " ".join(str(preferred_location or "").split())
+    if not safe_role:
+        return [], "Enter a target role before searching official portals."
+
+    dedicated_companies = {
+        "jpmorgan chase",
+        "bank of america",
+        "citi",
+        "capital one",
+        "deloitte",
+        "ey",
+        "pwc",
+        "kpmg",
+        "sap",
+        "boeing",
+        "at&t",
+        "comcast",
+        "dell",
+        "bayer",
+        "boston scientific",
+        "geico",
+        "t-mobile",
+        "experis",
+        "akkodis",
+    }
+    portal_targets: list[dict[str, str]] = []
+    for portal in JOB_SEARCH_OFFICIAL_COMPANY_PORTALS:
+        if not isinstance(portal, dict):
+            continue
+        company = " ".join(str(portal.get("company", "")).split())
+        if not company:
+            continue
+        if company.lower() in dedicated_companies:
+            continue
+        portal_targets.append(portal)
+    if not portal_targets:
+        return [], ""
+
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_portal_limit = max(2, min(5, int(limit / max(1, len(portal_targets))) + 2))
+    request_timeout = max(4, min(8, JOB_SEARCH_API_TIMEOUT_SECONDS))
+
+    ordered_results: list[list[dict[str, Any]] | None] = [None] * len(portal_targets)
+    notes: list[str] = []
+
+    with ThreadPoolExecutor(max_workers=max(1, min(6, len(portal_targets)))) as executor:
+        future_to_index = {}
+        for idx, portal in enumerate(portal_targets):
+            company = " ".join(str(portal.get("company", "")).split())
+            base_url = str(portal.get("base_url", "")).strip()
+            if not company or not base_url:
+                continue
+            role_param = str(portal.get("role_param", "")).strip() or "keywords"
+            location_param = str(portal.get("location_param", "")).strip() or "location"
+            future = executor.submit(
+                fetch_company_careers_jobs,
+                safe_role,
+                safe_location,
+                base_url=base_url,
+                company_name=company,
+                source_name=f"{company} Careers",
+                role_param=role_param,
+                location_param=location_param,
+                max_results=per_portal_limit,
+                request_timeout_seconds=request_timeout,
+            )
+            future_to_index[future] = idx
+
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                jobs, note = future.result()
+            except Exception:
+                jobs, note = [], ""
+            if isinstance(jobs, list) and jobs:
+                ordered_results[index] = [job for job in jobs if isinstance(job, dict)]
+            cleaned_note = " ".join(str(note or "").split())
+            if cleaned_note and not cleaned_note.lower().startswith("no "):
+                notes.append(cleaned_note)
+
+    provider_batches = [batch for batch in ordered_results if isinstance(batch, list) and batch]
+    if not provider_batches:
+        return [], "No additional official-portal roles matched the current role/location filter."
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    indexes = [0 for _ in provider_batches]
+    while len(deduped) < limit:
+        made_progress = False
+        for batch_index, batch in enumerate(provider_batches):
+            while indexes[batch_index] < len(batch):
+                job = batch[indexes[batch_index]]
+                indexes[batch_index] += 1
+                title = str(job.get("title", "")).strip().lower()
+                company = str(job.get("company", "")).strip().lower()
+                location = str(job.get("location", "")).strip().lower()
+                apply_url = str(job.get("apply_url", "")).strip().lower()
+                dedupe_key = (title, company, location, apply_url)
+                if not title or dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                deduped.append(job)
+                made_progress = True
+                break
+            if len(deduped) >= limit:
+                break
+        if not made_progress:
+            break
+
+    if not deduped:
+        return [], "No additional official-portal roles matched the current role/location filter."
+    return deduped, " ".join(notes).strip()
+
+
+def fetch_official_company_career_links(
+    role_query: str,
+    preferred_location: str,
+    max_results: int = JOB_SEARCH_MAX_RESULTS_DEFAULT,
+) -> tuple[list[dict[str, Any]], str]:
+    limit = max(1, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(max_results or JOB_SEARCH_MAX_RESULTS_DEFAULT)))
+    per_source_limit = max(10, min(20, int(limit / 2) + 6))
+    url_cache_bucket = int(time.time() // max(1, JOB_SEARCH_FETCH_CACHE_TTL_SECONDS))
+    source_fetchers = [
+        fetch_jpmorgan_jobs,
+        fetch_bankofamerica_jobs,
+        fetch_weill_cornell_jobs,
+        fetch_l3harris_jobs,
+        fetch_sap_jobs,
+        fetch_boeing_jobs,
+        fetch_att_jobs,
+        fetch_comcast_jobs,
+        fetch_dell_jobs,
+        fetch_bayer_jobs,
+        fetch_boston_scientific_jobs,
+        fetch_citi_jobs,
+        fetch_capitalone_jobs,
+        fetch_pwc_jobs,
+        fetch_ey_jobs,
+        fetch_deloitte_jobs,
+        fetch_kpmg_jobs,
+        fetch_official_portal_network_jobs,
+    ]
+
+    provider_batches: list[list[dict[str, Any]]] = []
+    notes: list[str] = []
+    ordered_results: list[list[dict[str, Any]] | None] = [None] * len(source_fetchers)
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(source_fetchers)))) as executor:
+        future_to_index = {
+            executor.submit(fetcher, role_query, preferred_location, max_results=per_source_limit): index
+            for index, fetcher in enumerate(source_fetchers)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                jobs, note = future.result()
+            except Exception:
+                jobs, note = [], ""
+            if isinstance(jobs, list) and jobs:
+                ordered_results[index] = [job for job in jobs if isinstance(job, dict)]
+            cleaned_note = str(note or "").strip()
+            if cleaned_note and "No " not in cleaned_note:
+                notes.append(cleaned_note)
+    provider_batches = [batch for batch in ordered_results if isinstance(batch, list) and batch]
+
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    if provider_batches:
+        indexes = [0 for _ in provider_batches]
+        while len(deduped) < limit:
+            made_progress = False
+            for batch_index, batch in enumerate(provider_batches):
+                while indexes[batch_index] < len(batch):
+                    job = _sanitize_job_row_for_listing(
+                        batch[indexes[batch_index]],
+                        url_cache_bucket=url_cache_bucket,
+                    )
+                    indexes[batch_index] += 1
+                    if job is None:
+                        continue
+                    title = str(job.get("title", "")).strip().lower()
+                    company = str(job.get("company", "")).strip().lower()
+                    location = str(job.get("location", "")).strip().lower()
+                    apply_url = str(job.get("apply_url", "")).strip().lower()
+                    dedupe_key = (title, company, location, apply_url)
+                    if not title or dedupe_key in seen:
+                        continue
+                    seen.add(dedupe_key)
+                    deduped.append(job)
+                    made_progress = True
+                    break
+                if len(deduped) >= limit:
+                    break
+            if not made_progress:
+                break
+
+    if not deduped:
+        return [], "No official-company careers jobs matched the current filter."
+    return deduped, " ".join(notes).strip()
+
+
 def fetch_jobs_from_all_sources(
     role_query: str,
     preferred_location: str,
@@ -4524,14 +9527,37 @@ def fetch_jobs_from_all_sources(
     jooble_api_key = get_config_value("JOOBLE_API_KEY", "jobs", "jooble_api_key", "")
     usajobs_auth_key = get_config_value("USAJOBS_AUTH_KEY", "jobs", "usajobs_auth_key", "")
     usajobs_user_agent = get_config_value("USAJOBS_USER_AGENT", "jobs", "usajobs_user_agent", "")
-    enabled_provider_count = 1
+    oracle_cloud_enabled_raw = get_config_value(
+        "JOB_SEARCH_ORACLE_CLOUD_ENABLED",
+        "jobs",
+        "oracle_cloud_enabled",
+        "1",
+    ).strip().lower()
+    oracle_cloud_enabled = oracle_cloud_enabled_raw not in {"0", "false", "no", "off", "disable", "disabled"}
+    official_careers_enabled_raw = get_config_value(
+        "JOB_SEARCH_OFFICIAL_CAREERS_ENABLED",
+        "jobs",
+        "official_careers_enabled",
+        "1",
+    ).strip().lower()
+    official_careers_enabled = official_careers_enabled_raw not in {"0", "false", "no", "off", "disable", "disabled"}
+
+    # Remotive + The Muse + Greenhouse + Lever + Workday + Workable + Ashby + iCIMS + Taleo + SmartRecruiters +
+    # Jobvite + Breezy HR + JazzHR + Teamtailor + Oracle Recruiting Cloud + SuccessFactors
+    enabled_provider_count = 16 if oracle_cloud_enabled else 15
     if adzuna_app_id and adzuna_app_key:
         enabled_provider_count += 1
     if jooble_api_key:
         enabled_provider_count += 1
     if usajobs_auth_key and usajobs_user_agent:
         enabled_provider_count += 1
-    per_provider_limit = max(3, min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(target_count / max(1, enabled_provider_count)) + 2))
+    per_provider_limit = max(
+        10,
+        min(
+            JOB_SEARCH_MAX_RESULTS_LIMIT,
+            int(target_count / max(1, enabled_provider_count)) + 10,
+        ),
+    )
     cache_bucket = int(time.time() // max(1, JOB_SEARCH_FETCH_CACHE_TTL_SECONDS))
 
     cached_jobs, message = _fetch_jobs_from_all_sources_cached(
@@ -4543,9 +9569,362 @@ def fetch_jobs_from_all_sources(
         adzuna_country=adzuna_country,
         jooble_enabled=bool(jooble_api_key),
         usajobs_enabled=bool(usajobs_auth_key and usajobs_user_agent),
+        oracle_cloud_enabled=oracle_cloud_enabled,
+        official_careers_enabled=official_careers_enabled,
+        provider_mix_version=JOB_SEARCH_PROVIDER_MIX_VERSION,
         cache_bucket=cache_bucket,
     )
     return [dict(item) for item in cached_jobs if isinstance(item, dict)], message
+
+
+def _expand_agentic_role_queries(role_query: str) -> list[str]:
+    clean = " ".join(str(role_query or "").split())
+    if not clean:
+        return []
+    lowered = clean.lower()
+    variants: list[str] = [clean]
+
+    family_variant_map: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+        (
+            ("java",),
+            (
+                "Java Developer",
+                "Java Software Engineer",
+                "Java Backend Engineer",
+                "Spring Boot Developer",
+                "Backend Engineer",
+            ),
+        ),
+        (
+            ("python",),
+            (
+                "Python Developer",
+                "Python Software Engineer",
+                "Python Backend Engineer",
+                "Backend Engineer",
+            ),
+        ),
+        (
+            ("backend", "api", "microservice"),
+            (
+                "Backend Engineer",
+                "Backend Developer",
+                "Software Engineer",
+                "Platform Engineer",
+            ),
+        ),
+        (
+            ("frontend", "front end", "ui", "react", "angular"),
+            (
+                "Frontend Engineer",
+                "Frontend Developer",
+                "UI Engineer",
+                "Web Developer",
+            ),
+        ),
+        (
+            ("full stack", "fullstack"),
+            (
+                "Full Stack Engineer",
+                "Full Stack Developer",
+                "Software Engineer",
+            ),
+        ),
+        (
+            ("data engineer", "etl", "spark", "airflow"),
+            (
+                "Data Engineer",
+                "Analytics Engineer",
+                "ETL Engineer",
+            ),
+        ),
+        (
+            ("data scientist", "machine learning", "ml"),
+            (
+                "Data Scientist",
+                "Machine Learning Engineer",
+                "AI Engineer",
+            ),
+        ),
+        (
+            ("devops", "sre", "kubernetes", "terraform"),
+            (
+                "DevOps Engineer",
+                "Site Reliability Engineer",
+                "Platform Engineer",
+                "Cloud Engineer",
+            ),
+        ),
+        (
+            ("cloud", "aws", "azure", "gcp"),
+            (
+                "Cloud Engineer",
+                "DevOps Engineer",
+                "Site Reliability Engineer",
+            ),
+        ),
+        (
+            ("business analyst",),
+            (
+                "Business Analyst",
+                "Data Analyst",
+                "Systems Analyst",
+            ),
+        ),
+        (
+            ("product manager",),
+            (
+                "Product Manager",
+                "Technical Product Manager",
+            ),
+        ),
+    ]
+
+    for triggers, family_variants in family_variant_map:
+        if any(trigger in lowered for trigger in triggers):
+            variants.extend(family_variants)
+
+    has_role_suffix = any(
+        token in lowered
+        for token in ("engineer", "developer", "analyst", "manager", "scientist", "architect")
+    )
+    if not has_role_suffix:
+        variants.append(f"{clean} Engineer")
+        variants.append(f"{clean} Developer")
+        if "software" not in lowered:
+            variants.append(f"{clean} Software Engineer")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in variants:
+        normalized = " ".join(str(item or "").split())
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(normalized)
+    return deduped
+
+
+def _get_job_provider_health_state(provider: str) -> dict[str, Any]:
+    provider_name = " ".join(str(provider or "").split()) or "Unknown Provider"
+    with _JOB_PROVIDER_HEALTH_LOCK:
+        state = _JOB_PROVIDER_HEALTH.get(provider_name)
+        if not isinstance(state, dict):
+            state = {
+                "consecutive_failures": 0,
+                "cooldown_until": 0.0,
+                "last_error": "",
+                "last_failure_ts": 0.0,
+                "last_success_ts": 0.0,
+            }
+            _JOB_PROVIDER_HEALTH[provider_name] = state
+        state.setdefault("consecutive_failures", 0)
+        state.setdefault("cooldown_until", 0.0)
+        state.setdefault("last_error", "")
+        state.setdefault("last_failure_ts", 0.0)
+        state.setdefault("last_success_ts", 0.0)
+        return dict(state)
+
+
+def _is_job_provider_failure_note(note: str) -> bool:
+    cleaned_note = str(note or "").strip()
+    if not cleaned_note:
+        return False
+    lowered = cleaned_note.lower()
+    non_error_prefixes = (
+        "no ",
+        "no jobs",
+        "no roles",
+        "no additional direct postings",
+    )
+    if lowered.startswith(non_error_prefixes):
+        return False
+    if any(marker in lowered for marker in JOB_PROVIDER_HEALTH_ERROR_MARKERS):
+        return True
+    return any(token in lowered for token in (" error ", " failed", " unavailable", " exception"))
+
+
+def _mark_job_provider_success(provider: str) -> None:
+    provider_name = " ".join(str(provider or "").split()) or "Unknown Provider"
+    now_ts = time.time()
+    with _JOB_PROVIDER_HEALTH_LOCK:
+        state = _JOB_PROVIDER_HEALTH.get(provider_name)
+        if not isinstance(state, dict):
+            state = {}
+            _JOB_PROVIDER_HEALTH[provider_name] = state
+        state["consecutive_failures"] = 0
+        state["cooldown_until"] = 0.0
+        state["last_error"] = ""
+        state["last_success_ts"] = now_ts
+
+
+def _mark_job_provider_failure(provider: str, error_note: str) -> None:
+    provider_name = " ".join(str(provider or "").split()) or "Unknown Provider"
+    safe_error = " ".join(str(error_note or "").split()) or "Provider request failed."
+    now_ts = time.time()
+    with _JOB_PROVIDER_HEALTH_LOCK:
+        state = _JOB_PROVIDER_HEALTH.get(provider_name)
+        if not isinstance(state, dict):
+            state = {}
+            _JOB_PROVIDER_HEALTH[provider_name] = state
+        failure_count = int(state.get("consecutive_failures", 0) or 0) + 1
+        state["consecutive_failures"] = failure_count
+        state["last_error"] = safe_error
+        state["last_failure_ts"] = now_ts
+        if failure_count >= int(JOB_SEARCH_PROVIDER_MAX_CONSECUTIVE_FAILURES):
+            state["cooldown_until"] = now_ts + float(JOB_SEARCH_PROVIDER_COOLDOWN_SECONDS)
+
+
+def _is_job_provider_in_cooldown(provider: str) -> tuple[bool, int]:
+    state = _get_job_provider_health_state(provider)
+    cooldown_until = float(state.get("cooldown_until", 0.0) or 0.0)
+    remaining = int(round(cooldown_until - time.time()))
+    if remaining > 0:
+        return True, remaining
+    return False, 0
+
+
+def _fetch_provider_jobs_with_resilience(
+    provider_name: str,
+    fetcher: Any,
+    role_query: str,
+    preferred_location: str,
+    per_provider_limit: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    safe_provider = " ".join(str(provider_name or "").split()) or "Unknown Provider"
+    in_cooldown, cooldown_seconds = _is_job_provider_in_cooldown(safe_provider)
+    if in_cooldown:
+        return [], {
+            "provider": safe_provider,
+            "state": "cooldown",
+            "attempts": 0,
+            "cooldown_seconds": cooldown_seconds,
+            "note": "Provider is temporarily cooling down due to recent API failures.",
+        }
+
+    attempts = max(1, int(JOB_SEARCH_PROVIDER_RETRY_ATTEMPTS or 1))
+    backoff = max(0.0, float(JOB_SEARCH_PROVIDER_RETRY_BACKOFF_SECONDS or 0.0))
+    last_note = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            jobs, note = fetcher(role_query, preferred_location, max_results=per_provider_limit)
+            safe_jobs = [job for job in (jobs or []) if isinstance(job, dict)]
+            safe_note = " ".join(str(note or "").split())
+        except Exception as ex:
+            safe_jobs = []
+            safe_note = f"{safe_provider} request failed: {ex.__class__.__name__}."
+
+        if safe_note:
+            last_note = safe_note
+
+        if safe_jobs:
+            _mark_job_provider_success(safe_provider)
+            return safe_jobs, {
+                "provider": safe_provider,
+                "state": "ok",
+                "attempts": attempt,
+                "note": safe_note,
+            }
+
+        if _is_job_provider_failure_note(safe_note):
+            if attempt < attempts and backoff > 0:
+                time.sleep(backoff * attempt)
+                continue
+            _mark_job_provider_failure(safe_provider, safe_note)
+            return [], {
+                "provider": safe_provider,
+                "state": "failed",
+                "attempts": attempt,
+                "note": safe_note,
+            }
+
+        _mark_job_provider_success(safe_provider)
+        return [], {
+            "provider": safe_provider,
+            "state": "empty",
+            "attempts": attempt,
+            "note": safe_note,
+        }
+
+    _mark_job_provider_failure(safe_provider, last_note)
+    return [], {
+        "provider": safe_provider,
+        "state": "failed",
+        "attempts": attempts,
+        "note": last_note or "Provider failed after retries.",
+    }
+
+
+def _fetch_jobs_from_provider_set(
+    role_query: str,
+    preferred_location: str,
+    provider_fetchers: list[tuple[str, Any]],
+    per_provider_limit: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    aggregated: list[dict[str, Any]] = []
+    provider_statuses: list[dict[str, Any]] = []
+    if not provider_fetchers:
+        return aggregated, provider_statuses
+    with ThreadPoolExecutor(max_workers=max(1, len(provider_fetchers))) as executor:
+        future_map = {
+            executor.submit(
+                _fetch_provider_jobs_with_resilience,
+                provider,
+                fetcher,
+                role_query,
+                preferred_location,
+                per_provider_limit,
+            ): provider
+            for provider, fetcher in provider_fetchers
+        }
+        for future in as_completed(future_map):
+            provider = " ".join(str(future_map.get(future, "")).split()) or "Unknown Provider"
+            try:
+                jobs, status = future.result()
+            except Exception:
+                _mark_job_provider_failure(provider, "Provider aggregation failed unexpectedly.")
+                provider_statuses.append(
+                    {
+                        "provider": provider,
+                        "state": "failed",
+                        "attempts": 1,
+                        "note": "Provider aggregation failed unexpectedly.",
+                    }
+                )
+                continue
+            if isinstance(jobs, list) and jobs:
+                aggregated.extend(job for job in jobs if isinstance(job, dict))
+            if isinstance(status, dict):
+                provider_statuses.append(dict(status))
+    return aggregated, provider_statuses
+
+
+def _sanitize_and_dedupe_jobs(
+    aggregated: list[dict[str, Any]],
+    *,
+    deduped: list[dict[str, Any]],
+    seen: set[tuple[str, str, str, str]],
+    cache_bucket: int,
+) -> int:
+    rejected_link_count = 0
+    for job in aggregated:
+        cleaned_job = _sanitize_job_row_for_listing(job, url_cache_bucket=int(cache_bucket or 0))
+        if cleaned_job is None:
+            rejected_link_count += 1
+            continue
+        title = str(cleaned_job.get("title", "")).strip().lower()
+        company = str(cleaned_job.get("company", "")).strip().lower()
+        location = str(cleaned_job.get("location", "")).strip().lower()
+        apply_url = str(cleaned_job.get("apply_url", "")).strip().lower()
+        key = (title, company, location, apply_url)
+        if not title or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(cleaned_job)
+    return rejected_link_count
 
 
 @lru_cache(maxsize=96)
@@ -4558,50 +9937,219 @@ def _fetch_jobs_from_all_sources_cached(
     adzuna_country: str,
     jooble_enabled: bool,
     usajobs_enabled: bool,
+    oracle_cloud_enabled: bool,
+    official_careers_enabled: bool,
+    provider_mix_version: int,
     cache_bucket: int,
 ) -> tuple[tuple[dict[str, Any], ...], str]:
-    _ = (adzuna_country, jooble_enabled, cache_bucket)
+    _ = (
+        adzuna_country,
+        jooble_enabled,
+        oracle_cloud_enabled,
+        official_careers_enabled,
+        provider_mix_version,
+        cache_bucket,
+    )
 
-    provider_fetchers: list[tuple[str, Any]] = [("Remotive", fetch_remotive_jobs)]
+    provider_fetchers: list[tuple[str, Any]] = [
+        ("Remotive", fetch_remotive_jobs),
+        ("The Muse", fetch_themuse_jobs),
+        ("Greenhouse Network", fetch_greenhouse_network_jobs),
+        ("Lever Network", fetch_lever_network_jobs),
+        ("Workday Network", fetch_workday_network_jobs),
+        ("Workable Network", fetch_workable_network_jobs),
+        ("Ashby Network", fetch_ashby_network_jobs),
+        ("iCIMS Network", fetch_icims_network_jobs),
+        ("Taleo Network", fetch_taleo_network_jobs),
+        ("SmartRecruiters Network", fetch_smartrecruiters_network_jobs),
+        ("Jobvite Network", fetch_jobvite_network_jobs),
+        ("Breezy HR Network", fetch_breezyhr_network_jobs),
+        ("JazzHR Network", fetch_jazzhr_network_jobs),
+        ("Teamtailor Network", fetch_teamtailor_network_jobs),
+        ("SuccessFactors Network", fetch_successfactors_network_jobs),
+    ]
+    if oracle_cloud_enabled:
+        provider_fetchers.insert(-1, ("Oracle Recruiting Cloud Network", fetch_oracle_recruiting_cloud_network_jobs))
     if adzuna_enabled:
         provider_fetchers.insert(0, ("Adzuna", fetch_adzuna_jobs))
     if jooble_enabled:
         provider_fetchers.append(("Jooble", fetch_jooble_jobs))
     if usajobs_enabled:
         provider_fetchers.append(("USAJobs", fetch_usajobs_jobs))
+    official_provider = ("Official Careers", fetch_official_company_career_links) if official_careers_enabled else None
 
-    aggregated: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=max(1, len(provider_fetchers))) as executor:
-        future_map = {
-            executor.submit(fetcher, role_query, preferred_location, max_results=per_provider_limit): provider
-            for provider, fetcher in provider_fetchers
-        }
-        for future in as_completed(future_map):
-            try:
-                jobs, _ = future.result()
-            except Exception:
-                continue
-            if isinstance(jobs, list) and jobs:
-                aggregated.extend(job for job in jobs if isinstance(job, dict))
+    aggregated, provider_statuses = _fetch_jobs_from_provider_set(
+        role_query=role_query,
+        preferred_location=preferred_location,
+        provider_fetchers=provider_fetchers,
+        per_provider_limit=per_provider_limit,
+    )
 
     seen: set[tuple[str, str, str, str]] = set()
     deduped: list[dict[str, Any]] = []
-    for job in aggregated:
-        title = str(job.get("title", "")).strip().lower()
-        company = str(job.get("company", "")).strip().lower()
-        location = str(job.get("location", "")).strip().lower()
-        apply_url = str(job.get("apply_url", "")).strip().lower()
-        key = (title, company, location, apply_url)
-        if not title or key in seen:
+    rejected_link_count = _sanitize_and_dedupe_jobs(
+        aggregated,
+        deduped=deduped,
+        seen=seen,
+        cache_bucket=int(cache_bucket or 0),
+    )
+    official_seed_limit = 0
+    if official_provider is not None:
+        # Keep official portals always-on with a small fetch budget so major brands (Google/Amazon/etc.)
+        # can appear even when ATS feeds already return high volume.
+        official_seed_limit = max(4, min(12, int(round(float(per_provider_limit) * 0.6))))
+        official_seed_jobs, official_seed_status = _fetch_provider_jobs_with_resilience(
+            official_provider[0],
+            official_provider[1],
+            role_query,
+            preferred_location,
+            official_seed_limit,
+        )
+        if isinstance(official_seed_status, dict):
+            provider_statuses.append(dict(official_seed_status))
+        if isinstance(official_seed_jobs, list) and official_seed_jobs:
+            rejected_link_count += _sanitize_and_dedupe_jobs(
+                official_seed_jobs,
+                deduped=deduped,
+                seen=seen,
+                cache_bucket=int(cache_bucket or 0),
+            )
+
+    official_trigger_floor = max(40, int(round(float(target_count or 0) * 0.45)))
+    official_expansion_limit = max(per_provider_limit, int(per_provider_limit * 1.5))
+    if (
+        official_provider is not None
+        and len(deduped) < official_trigger_floor
+        and official_expansion_limit > max(0, int(official_seed_limit or 0))
+    ):
+        official_jobs, official_status = _fetch_provider_jobs_with_resilience(
+            official_provider[0],
+            official_provider[1],
+            role_query,
+            preferred_location,
+            official_expansion_limit,
+        )
+        if isinstance(official_status, dict):
+            provider_statuses.append(dict(official_status))
+        if isinstance(official_jobs, list) and official_jobs:
+            rejected_link_count += _sanitize_and_dedupe_jobs(
+                official_jobs,
+                deduped=deduped,
+                seen=seen,
+                cache_bucket=int(cache_bucket or 0),
+            )
+
+    # Agentic recovery: expand role terms and broaden location when active links are low.
+    recovery_applied = False
+    recovery_steps: list[str] = []
+    min_target = max(
+        12,
+        min(
+            int(target_count or JOB_SEARCH_MAX_RESULTS_DEFAULT),
+            int(JOB_SEARCH_AGENTIC_MIN_TARGET),
+        ),
+    )
+    recovery_floor = max(
+        int(min_target),
+        int(round(max(0.2, min(0.9, float(JOB_SEARCH_AGENTIC_RECOVERY_MIN_RATIO))) * float(target_count or 0))),
+    )
+    if len(deduped) < recovery_floor:
+        role_variants = _expand_agentic_role_queries(role_query)
+        expanded_queries = role_variants[1 : 1 + max(0, int(JOB_SEARCH_AGENTIC_MAX_QUERY_EXPANSIONS))]
+        if expanded_queries:
+            recovery_applied = True
+            recovery_limit = max(
+                per_provider_limit + 4,
+                min(JOB_SEARCH_MAX_RESULTS_LIMIT, int(per_provider_limit * 1.6)),
+            )
+            for variant in expanded_queries:
+                expanded_batch, expanded_statuses = _fetch_jobs_from_provider_set(
+                    role_query=variant,
+                    preferred_location=preferred_location,
+                    provider_fetchers=provider_fetchers,
+                    per_provider_limit=recovery_limit,
+                )
+                provider_statuses.extend(expanded_statuses)
+                rejected_link_count += _sanitize_and_dedupe_jobs(
+                    expanded_batch,
+                    deduped=deduped,
+                    seen=seen,
+                    cache_bucket=int(cache_bucket or 0),
+                )
+                if len(deduped) >= target_count:
+                    break
+            if expanded_queries:
+                recovery_steps.append("expanded role query variants")
+
+    if len(deduped) < recovery_floor and str(preferred_location or "").strip():
+        recovery_applied = True
+        broaden_limit = max(per_provider_limit + 5, min(JOB_SEARCH_MAX_RESULTS_LIMIT, per_provider_limit * 2))
+        broaden_batch, broaden_statuses = _fetch_jobs_from_provider_set(
+            role_query=role_query,
+            preferred_location="",
+            provider_fetchers=provider_fetchers,
+            per_provider_limit=broaden_limit,
+        )
+        provider_statuses.extend(broaden_statuses)
+        rejected_link_count += _sanitize_and_dedupe_jobs(
+            broaden_batch,
+            deduped=deduped,
+            seen=seen,
+            cache_bucket=int(cache_bucket or 0),
+        )
+        recovery_steps.append("broadened location to capture more active postings")
+
+    provider_priority = {"failed": 4, "cooldown": 3, "ok": 2, "empty": 1}
+    provider_state_by_name: dict[str, dict[str, Any]] = {}
+    for status in provider_statuses:
+        if not isinstance(status, dict):
             continue
-        seen.add(key)
-        deduped.append(job)
+        provider_name = " ".join(str(status.get("provider", "")).split())
+        if not provider_name:
+            continue
+        state = " ".join(str(status.get("state", "")).split()).lower() or "empty"
+        normalized_status = dict(status)
+        normalized_status["state"] = state
+        existing = provider_state_by_name.get(provider_name)
+        if existing is None:
+            provider_state_by_name[provider_name] = normalized_status
+            continue
+        existing_state = " ".join(str(existing.get("state", "")).split()).lower() or "empty"
+        if provider_priority.get(state, 0) >= provider_priority.get(existing_state, 0):
+            provider_state_by_name[provider_name] = normalized_status
+    failed_provider_count = sum(
+        1 for entry in provider_state_by_name.values() if str(entry.get("state", "")).lower() == "failed"
+    )
+    cooldown_provider_count = sum(
+        1 for entry in provider_state_by_name.values() if str(entry.get("state", "")).lower() == "cooldown"
+    )
 
     if not deduped:
+        if failed_provider_count or cooldown_provider_count:
+            return (
+                tuple(),
+                "Live job APIs are temporarily unstable for this search. Please retry in a minute.",
+            )
         return tuple(), "No jobs found for this search. Try broadening role, location, or filters."
 
-    pool_limit = min(len(deduped), max(target_count, target_count + 4))
-    return tuple(dict(item) for item in deduped[:pool_limit] if isinstance(item, dict)), ""
+    pool_limit = min(
+        len(deduped),
+        max(
+            JOB_SEARCH_MAX_RESULTS_LIMIT,
+            per_provider_limit * max(1, len(provider_fetchers)),
+            target_count * max(1, len(provider_fetchers)),
+        ),
+    )
+    final_jobs = tuple(dict(item) for item in deduped[:pool_limit] if isinstance(item, dict))
+    note_parts: list[str] = [f"Showing {len(final_jobs)} active job postings from live sources."]
+    if recovery_applied and recovery_steps:
+        note_parts.append(f"Agentic retrieval applied: {', '.join(recovery_steps)}.")
+    if failed_provider_count or cooldown_provider_count:
+        note_parts.append("Some providers were temporarily unavailable and were skipped automatically.")
+    if rejected_link_count > 0 and len(final_jobs) <= max(4, int(target_count * 0.35)):
+        note_parts.append("Some stale links were removed automatically.")
+    note = " ".join(part for part in note_parts if str(part).strip()).strip()
+    return final_jobs, note
 
 
 def infer_job_position_tags(job_row: dict[str, Any]) -> list[str]:
@@ -4893,8 +10441,10 @@ def is_zoswi_capability_request(message: str) -> bool:
         "coding room",
         "ai coding room",
         "ai workspace",
+        "ai pro",
         "live workspace",
         "zoswi live workspace",
+        "zoswi ai pro",
         "careers",
         "career studio",
         "job match studio",
@@ -4994,7 +10544,7 @@ def build_zoswi_capability_response(message: str) -> str:
             "Run Home Resume-JD analysis once, then Start 3-Stage AI Coding Room will unlock."
         )
 
-    if "ai workspace" in text or "live workspace" in text:
+    if "ai workspace" in text or "live workspace" in text or "ai pro" in text:
         if not live_workspace_enabled:
             return f"{ZOSWI_LIVE_WORKSPACE_NAME} is currently disabled."
         return (
@@ -5357,6 +10907,15 @@ def run_agentive_job_search_pipeline(
         }
 
     trace.append(f"Fetched {len(jobs)} jobs from active providers.")
+    source_counts: dict[str, int] = {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        source_name = str(job.get("source", "")).strip() or "Unknown"
+        source_counts[source_name] = source_counts.get(source_name, 0) + 1
+    if source_counts:
+        source_parts = [f"{name}: {count}" for name, count in sorted(source_counts.items(), key=lambda item: item[0])]
+        trace.append(f"Source coverage: {' | '.join(source_parts)}.")
     date_filtered_jobs, posted_msg = filter_jobs_by_posted_within(jobs, safe_posted_days)
     if not date_filtered_jobs:
         combined_error = " ".join(part for part in [fetch_msg, posted_msg] if str(part).strip())
@@ -7871,7 +13430,7 @@ def ensure_quick_links_in_message_state(state_key: str) -> None:
             migrated = build_bot_first_message_content(full_name)
         elif state_key == "ai_workspace_messages":
             migrated = (
-                "ZoSwi Live Workspace is ready. "
+                f"{ZOSWI_LIVE_WORKSPACE_NAME} is ready. "
                 "Ask anything to get started.\n\n"
                 f"{links_line}"
             )
@@ -7913,7 +13472,7 @@ def default_ai_workspace_messages(full_name: str | None = None) -> list[dict[str
         {
             "role": "assistant",
             "content": (
-                "ZoSwi Live Workspace is ready. "
+                f"{ZOSWI_LIVE_WORKSPACE_NAME} is ready. "
                 "Ask anything to get started.\n\n"
                 f"{links_line}"
             ),
@@ -8793,7 +14352,7 @@ def build_ai_workspace_prompt(message: str) -> str:
     response_mode = infer_zoswi_response_mode(clean_message, intent)
     response_mode_guidance = build_zoswi_response_mode_guidance(response_mode)
     return f"""
-You are ZoSwi Live Workspace, a high-quality professional assistant.
+You are {ZOSWI_LIVE_WORKSPACE_NAME}, a high-quality professional assistant.
 
 Response rules:
 - Be direct, helpful, and conversational.
@@ -8863,7 +14422,7 @@ def ask_ai_workspace_stream(message: str):
 
     key = get_zoswiai_key()
     if not key:
-        yield "ZOSWI_AI_API_KEY is required for ZoSwi Live Workspace responses. Please set it and retry."
+        yield f"ZOSWI_AI_API_KEY is required for {ZOSWI_LIVE_WORKSPACE_NAME} responses. Please set it and retry."
         return
 
     intent_mode = infer_ai_workspace_intent(message)
@@ -10472,6 +16031,14 @@ def init_state() -> None:
         "password_reset_last_email": "",
         "password_reset_resend_after_ts": 0.0,
         "password_reset_form_reset_pending": False,
+        "magic_login_code_sent": False,
+        "magic_login_pending_user_id": 0,
+        "magic_login_pending_email": "",
+        "magic_login_onboarding_user_id": 0,
+        "magic_login_onboarding_email": "",
+        "magic_login_role_choice": "Candidate",
+        "magic_login_allow_everytime": True,
+        "magic_login_form_reset_pending": False,
         "latest_resume_text": "",
         "latest_job_description": "",
         "latest_resume_file_name": "",
@@ -10487,6 +16054,7 @@ def init_state() -> None:
         "job_search_posted_within_days": 0,
         "job_search_results": [],
         "job_search_last_error": "",
+        "job_search_state_migrated_v2": False,
         "careers_use_custom_profile": False,
         "careers_input_mode": "Resume + JD",
         "careers_resume_text": "",
@@ -10512,6 +16080,14 @@ def init_state() -> None:
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    if not bool(st.session_state.get("job_search_state_migrated_v2", False)):
+        try:
+            current_max_results = int(st.session_state.get("job_search_max_results", JOB_SEARCH_MAX_RESULTS_DEFAULT) or 0)
+        except Exception:
+            current_max_results = JOB_SEARCH_MAX_RESULTS_DEFAULT
+        if current_max_results < JOB_SEARCH_MAX_RESULTS_DEFAULT:
+            st.session_state.job_search_max_results = JOB_SEARCH_MAX_RESULTS_DEFAULT
+        st.session_state.job_search_state_migrated_v2 = True
     if "bot_messages" not in st.session_state:
         st.session_state.bot_messages = default_bot_messages()
     if "ai_workspace_messages" not in st.session_state:
@@ -10578,6 +16154,35 @@ def apply_pending_password_reset_form_reset() -> None:
         if key in st.session_state:
             st.session_state[key] = ""
     st.session_state.password_reset_form_reset_pending = False
+
+
+def get_magic_login_form_text_keys() -> list[str]:
+    return [
+        "magic_login_email",
+        "magic_login_otp_code",
+        "magic_login_password",
+        "magic_login_confirm_password",
+    ]
+
+
+def clear_magic_login_flow_state() -> None:
+    st.session_state.magic_login_code_sent = False
+    st.session_state.magic_login_pending_user_id = 0
+    st.session_state.magic_login_pending_email = ""
+    st.session_state.magic_login_onboarding_user_id = 0
+    st.session_state.magic_login_onboarding_email = ""
+    st.session_state.magic_login_form_reset_pending = True
+
+
+def apply_pending_magic_login_form_reset() -> None:
+    if not bool(st.session_state.get("magic_login_form_reset_pending")):
+        return
+    for key in get_magic_login_form_text_keys():
+        if key in st.session_state:
+            st.session_state[key] = ""
+    st.session_state.magic_login_role_choice = "Candidate"
+    st.session_state.magic_login_allow_everytime = True
+    st.session_state.magic_login_form_reset_pending = False
 
 
 def render_password_reset_timer_and_resend_widget(remaining_seconds: int) -> bool:
@@ -10919,6 +16524,115 @@ def render_email_verification_panel() -> None:
     if cancel_clicked:
         clear_pending_email_verification()
         st.info("Email verification canceled. You can restart it from login.")
+
+
+def render_magic_login_panel(is_mobile: bool) -> None:
+    pending_user_id = int(st.session_state.get("magic_login_pending_user_id") or 0)
+    pending_email = str(st.session_state.get("magic_login_pending_email", "")).strip().lower()
+    code_sent = bool(st.session_state.get("magic_login_code_sent")) and pending_user_id > 0 and bool(pending_email)
+
+    st.subheader("ZoSwi Magic")
+
+    send_code_clicked = False
+    verify_clicked = False
+    resend_clicked = False
+    cancel_magic_clicked = False
+    otp_code = ""
+    with st.container(key="magic_login_section"):
+        email_input = st.text_input(
+            "Magic Email",
+            key="magic_login_email",
+            placeholder="name@example.com",
+            label_visibility="collapsed",
+        )
+        cleaned_email = str(email_input or "").strip().lower()
+        with st.container(key="magic_login_send_action"):
+            send_code_clicked = st.button(
+                "Send Magic Code",
+                key="magic_login_send_btn",
+                use_container_width=is_mobile,
+            )
+
+        if code_sent:
+            otp_code = st.text_input(
+                "Magic Code",
+                key="magic_login_otp_code",
+                placeholder=f"Enter {EMAIL_OTP_DIGITS}-digit code",
+                max_chars=EMAIL_OTP_DIGITS,
+                label_visibility="collapsed",
+            )
+            with st.container(key="magic_login_verify_actions"):
+                verify_col, resend_col, cancel_col, spacer_col = st.columns([0.5, 0.5, 0.5, 2.5], gap="small")
+                with verify_col:
+                    verify_clicked = st.button(
+                        "Login",
+                        key="magic_login_verify_btn",
+                        use_container_width=True,
+                    )
+                with resend_col:
+                    resend_clicked = st.button(
+                        "Resend",
+                        key="magic_login_resend_btn",
+                        use_container_width=True,
+                    )
+                with cancel_col:
+                    cancel_magic_clicked = st.button(
+                        "Cancel",
+                        key="magic_login_cancel_btn",
+                        use_container_width=True,
+                    )
+                with spacer_col:
+                    st.markdown("", unsafe_allow_html=True)
+
+    if send_code_clicked:
+        sent, send_msg, user_id, normalized_email = send_magic_login_otp(cleaned_email)
+        if sent:
+            st.session_state.magic_login_code_sent = True
+            st.session_state.magic_login_pending_user_id = int(user_id or 0)
+            st.session_state.magic_login_pending_email = str(normalized_email or "").strip().lower()
+            st.success("Magic code sent. Check your email.")
+            st.rerun()
+        wait_seconds = parse_wait_seconds_from_message(send_msg)
+        if wait_seconds > 0:
+            st.warning(send_msg)
+        else:
+            st.error(send_msg)
+
+    if resend_clicked:
+        if pending_user_id <= 0 or not pending_email:
+            st.error("Request a magic code first.")
+        else:
+            resent, resend_msg = send_email_verification_otp(pending_user_id, pending_email)
+            if resent:
+                st.success("Magic code sent again.")
+            else:
+                wait_seconds = parse_wait_seconds_from_message(resend_msg)
+                if wait_seconds > 0:
+                    st.warning(resend_msg)
+                else:
+                    st.error(resend_msg)
+
+    if cancel_magic_clicked:
+        clear_magic_login_flow_state()
+        st.rerun()
+
+    if verify_clicked:
+        if pending_user_id <= 0 or not pending_email:
+            st.error("Request a magic code first.")
+        else:
+            verified, verify_msg = verify_email_verification_otp(pending_user_id, pending_email, otp_code)
+            if not verified:
+                st.error(verify_msg)
+            else:
+                user = prepare_magic_login_user_for_session(pending_user_id)
+                if user is None:
+                    st.error("Unable to complete magic login right now. Please try again.")
+                else:
+                    if complete_local_auth_login_session(user, login_method="magic_code", login_provider="email"):
+                        st.success("Logged in with magic code.")
+                        st.rerun()
+                    else:
+                        st.error("Unable to complete magic login right now. Please try again.")
 
 
 def render_auth_motivation_quote_box(role_context: str = "login") -> None:
@@ -11577,6 +17291,7 @@ def render_auth_screen() -> None:
     st.title("Career Command Centre")
     apply_pending_signup_form_reset()
     apply_pending_password_reset_form_reset()
+    apply_pending_magic_login_form_reset()
     if "auth_view_selector" not in st.session_state:
         st.session_state.auth_view_selector = read_auth_view_from_query_params()
     quote_role_context = "login"
@@ -11744,7 +17459,7 @@ def render_auth_screen() -> None:
             st.session_state.auth_notice_message = ""
         auth_view = st.radio(
             "Auth View",
-            options=["Login", "Create Account"],
+            options=["Login", "Create Account", "ZoSwi Magic"],
             key="auth_view_selector",
             horizontal=not is_mobile,
             label_visibility="collapsed",
@@ -11808,32 +17523,10 @@ def render_auth_screen() -> None:
                         else:
                             st.warning(f"Email not verified. {otp_msg}")
                         st.rerun()
-                    user_id = int(user.get("id") or 0)
-                    auth_token = create_auth_session(user_id)
-                    record_user_login_event(user_id, "password", "local")
-                    clear_pending_email_verification()
-                    st.session_state.user = user
-                    full_name = str(user.get("full_name", "")).strip()
-                    st.session_state.bot_user_email = None
-                    st.session_state.active_chat_id = None
-                    st.session_state.bot_open = should_auto_open_bot_after_auth()
-                    st.session_state.bot_messages = default_bot_messages(full_name)
-                    st.session_state.bot_pending_prompt = None
-                    st.session_state.zoswi_submit = False
-                    st.session_state.clear_zoswi_input = True
-                    st.session_state.full_chat_submit = False
-                    st.session_state.clear_full_chat_input = True
-                    st.session_state.ai_workspace_media_bytes = b""
-                    st.session_state.ai_workspace_media_mime = ""
-                    st.session_state.ai_workspace_media_file_name = ""
-                    st.session_state.ai_workspace_media_label = ""
-                    st.session_state.dashboard_view = "home"
-                    st.session_state.user_menu_open = False
-                    st.session_state.auth_session_token = auth_token or None
-                    if auth_token:
-                        queue_set_auth_cookie(auth_token)
-                    st.success("Logged in successfully.")
-                    st.rerun()
+                    if complete_local_auth_login_session(user, login_method="password", login_provider="local"):
+                        st.success("Logged in successfully.")
+                        st.rerun()
+                    st.error("Unable to log in right now. Please try again.")
                 else:
                     pending_signup = get_pending_signup_request_by_email(email)
                     if pending_signup is not None and verify_password(
@@ -11857,6 +17550,9 @@ def render_auth_screen() -> None:
 
             if bool(st.session_state.get("password_reset_flow_open")):
                 render_password_reset_panel()
+
+        elif auth_view == "ZoSwi Magic":
+            render_magic_login_panel(is_mobile)
 
         else:
             signup_success_message = str(st.session_state.get("signup_success_message", "")).strip()
@@ -12186,6 +17882,7 @@ def logout_current_user() -> None:
     st.session_state.coding_room_stage_approaches = {}
     clear_pending_email_verification()
     clear_password_reset_flow_state()
+    clear_magic_login_flow_state()
     if oauth_logged_in:
         try:
             st.logout()
@@ -12328,7 +18025,7 @@ def render_candidate_sidebar(user: dict[str, Any]) -> None:
                             st.session_state.bot_open = False
                             st.rerun()
                     if feature_flags.get("ai_workspace", False):
-                        if st.button("ZoSwi Live Workspace", key="sidebar_nav_ai_workspace", use_container_width=True):
+                        if st.button(ZOSWI_LIVE_WORKSPACE_NAME, key="sidebar_nav_ai_workspace", use_container_width=True):
                             st.session_state.dashboard_view = "ai_workspace"
                             st.session_state.bot_open = False
                             st.rerun()

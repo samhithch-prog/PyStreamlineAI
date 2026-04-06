@@ -16,6 +16,7 @@ from app.schemas.recruiter import (
     RecruiterReviewResponse,
     RecruiterScorecardResponse,
 )
+from app.schemas.instant_builder import InstantBuilderGenerateRequest, InstantBuilderGenerateResponse
 
 __all__ = [
     "StartInterviewRequest",
@@ -35,4 +36,6 @@ __all__ = [
     "RecruiterReviewRequest",
     "RecruiterReviewResponse",
     "RecruiterScorecardResponse",
+    "InstantBuilderGenerateRequest",
+    "InstantBuilderGenerateResponse",
 ]

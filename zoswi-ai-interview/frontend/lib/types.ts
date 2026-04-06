@@ -66,3 +66,12 @@ export type AccessTokenResponse = {
   token_type: "Bearer";
   expires_in: number;
 };
+
+export type InstantBuilderGenerateResponse = {
+  mode: "build" | "edit" | "show_code" | "export_code" | "explain" | "local" | "deploy" | "git" | "noop";
+  status_text: string;
+  spec: Record<string, unknown>;
+  preview_html: string;
+  files: Record<string, string>;
+  project_zip_base64: string;
+};
