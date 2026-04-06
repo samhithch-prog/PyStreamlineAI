@@ -1,10 +1,47 @@
 ﻿from __future__ import annotations
 
+import base64
+import json
+import os
+
 import streamlit as st
 
+
+_BOOKMARK_ICON_DATA_URI_CACHE: str | None = None
+
+
+def _load_bookmark_icon_data_uri() -> str:
+    global _BOOKMARK_ICON_DATA_URI_CACHE
+    if _BOOKMARK_ICON_DATA_URI_CACHE is not None:
+        return _BOOKMARK_ICON_DATA_URI_CACHE
+
+    candidate_paths = (
+        os.path.join("static", "zoswi-neural-icon.png"),
+        os.path.join("assets", "logo_icon.png"),
+        os.path.join("assets", "logo.png"),
+    )
+    for icon_path in candidate_paths:
+        if not os.path.exists(icon_path):
+            continue
+        try:
+            with open(icon_path, "rb") as icon_file:
+                payload = icon_file.read()
+            if not payload:
+                continue
+            ext = str(os.path.splitext(icon_path)[1] or "").strip().lower()
+            mime = "image/png" if ext in {".png", ""} else "image/x-icon"
+            encoded = base64.b64encode(payload).decode("ascii")
+            _BOOKMARK_ICON_DATA_URI_CACHE = f"data:{mime};base64,{encoded}"
+            return _BOOKMARK_ICON_DATA_URI_CACHE
+        except Exception:
+            continue
+
+    _BOOKMARK_ICON_DATA_URI_CACHE = ""
+    return _BOOKMARK_ICON_DATA_URI_CACHE
+
 def render_app_styles() -> None:
-    st.markdown(
-        """
+    inline_icon_data_uri_json = json.dumps(_load_bookmark_icon_data_uri())
+    css_html = """
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,500,0,0');
         @import url('https://fonts.googleapis.com/icon?family=Material+Icons+Outlined');
@@ -3332,6 +3369,7 @@ def render_app_styles() -> None:
             if (!hostDoc || !hostDoc.body) {
                 return;
             }
+            const inlineIconHref = __ZOSWI_INLINE_ICON_DATA_URI_JSON__;
             function upsertHeadLink(linkId, rel, href, extraAttrs) {
                 if (!hostDoc.head || !href) {
                     return;
@@ -3366,9 +3404,13 @@ def render_app_styles() -> None:
                 node.setAttribute("content", contentValue);
             }
             function applyMobileBookmarkBranding() {
-                const iconHref = "/app/static/zoswi-neural-icon.png";
-                const icon192 = "/app/static/zoswi-neural-icon-192.png";
-                const icon512 = "/app/static/zoswi-neural-icon-512.png";
+                const fallbackIcon = "/app/static/zoswi-neural-icon.png";
+                const fallbackIcon192 = "/app/static/zoswi-neural-icon-192.png";
+                const fallbackIcon512 = "/app/static/zoswi-neural-icon-512.png";
+                const hasInlineIcon = typeof inlineIconHref === "string" && inlineIconHref.trim().length > 0;
+                const iconHref = hasInlineIcon ? inlineIconHref : fallbackIcon;
+                const icon192 = hasInlineIcon ? inlineIconHref : fallbackIcon192;
+                const icon512 = hasInlineIcon ? inlineIconHref : fallbackIcon512;
                 const manifestHref = "/app/static/manifest.json";
                 upsertHeadLink("zoswi-apple-touch-icon", "apple-touch-icon", iconHref, { sizes: "180x180" });
                 upsertHeadLink("zoswi-favicon", "icon", iconHref, { type: "image/png", sizes: "32x32" });
@@ -3407,7 +3449,9 @@ def render_app_styles() -> None:
             observer.observe(hostDoc.body, { childList: true, subtree: true });
         })();
         </script>
-        """,
+        """
+    st.markdown(
+        css_html.replace("__ZOSWI_INLINE_ICON_DATA_URI_JSON__", inline_icon_data_uri_json),
         unsafe_allow_html=True,
     )
 
