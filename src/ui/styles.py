@@ -3332,6 +3332,54 @@ def render_app_styles() -> None:
             if (!hostDoc || !hostDoc.body) {
                 return;
             }
+            function upsertHeadLink(linkId, rel, href, extraAttrs) {
+                if (!hostDoc.head || !href) {
+                    return;
+                }
+                let node = hostDoc.head.querySelector(`#${linkId}`);
+                if (!node) {
+                    node = hostDoc.createElement("link");
+                    node.setAttribute("id", linkId);
+                    hostDoc.head.appendChild(node);
+                }
+                node.setAttribute("rel", rel);
+                node.setAttribute("href", href);
+                if (extraAttrs && typeof extraAttrs === "object") {
+                    Object.entries(extraAttrs).forEach(([key, value]) => {
+                        if (typeof key === "string" && typeof value === "string" && value.trim()) {
+                            node.setAttribute(key, value);
+                        }
+                    });
+                }
+            }
+            function upsertHeadMeta(metaId, attrName, attrValue, contentValue) {
+                if (!hostDoc.head || !attrName || !attrValue || !contentValue) {
+                    return;
+                }
+                let node = hostDoc.head.querySelector(`#${metaId}`);
+                if (!node) {
+                    node = hostDoc.createElement("meta");
+                    node.setAttribute("id", metaId);
+                    hostDoc.head.appendChild(node);
+                }
+                node.setAttribute(attrName, attrValue);
+                node.setAttribute("content", contentValue);
+            }
+            function applyMobileBookmarkBranding() {
+                const iconHref = "/app/static/zoswi-neural-icon.png";
+                const icon192 = "/app/static/zoswi-neural-icon-192.png";
+                const icon512 = "/app/static/zoswi-neural-icon-512.png";
+                const manifestHref = "/app/static/manifest.json";
+                upsertHeadLink("zoswi-apple-touch-icon", "apple-touch-icon", iconHref, { sizes: "180x180" });
+                upsertHeadLink("zoswi-favicon", "icon", iconHref, { type: "image/png", sizes: "32x32" });
+                upsertHeadLink("zoswi-favicon-shortcut", "shortcut icon", iconHref, { type: "image/png" });
+                upsertHeadLink("zoswi-favicon-192", "icon", icon192, { type: "image/png", sizes: "192x192" });
+                upsertHeadLink("zoswi-favicon-512", "icon", icon512, { type: "image/png", sizes: "512x512" });
+                upsertHeadLink("zoswi-web-manifest", "manifest", manifestHref, {});
+                upsertHeadMeta("zoswi-mobile-web-title", "name", "apple-mobile-web-app-title", "ZoSwi AI");
+                upsertHeadMeta("zoswi-mobile-app-name", "name", "application-name", "ZoSwi AI");
+                upsertHeadMeta("zoswi-mobile-theme-color", "name", "theme-color", "#0f172a");
+            }
             function hideSubmitHints() {
                 const hintTexts = new Set([
                     "",
@@ -3346,12 +3394,16 @@ def render_app_styles() -> None:
                     }
                 });
             }
+            applyMobileBookmarkBranding();
             hideSubmitHints();
             if (hostWin.__zoswiSubmitHintsObserverActive) {
                 return;
             }
             hostWin.__zoswiSubmitHintsObserverActive = true;
-            const observer = new MutationObserver(() => hideSubmitHints());
+            const observer = new MutationObserver(() => {
+                applyMobileBookmarkBranding();
+                hideSubmitHints();
+            });
             observer.observe(hostDoc.body, { childList: true, subtree: true });
         })();
         </script>

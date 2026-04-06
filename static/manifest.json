@@ -1,0 +1,21 @@
+{
+  "name": "ZoSwi AI",
+  "short_name": "ZoSwi",
+  "start_url": "/?auth=login",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/app/static/zoswi-neural-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/app/static/zoswi-neural-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
