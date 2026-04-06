@@ -3412,15 +3412,54 @@ def render_app_styles() -> None:
                 const icon192 = hasInlineIcon ? inlineIconHref : fallbackIcon192;
                 const icon512 = hasInlineIcon ? inlineIconHref : fallbackIcon512;
                 const manifestHref = "/app/static/manifest.json";
+                const appTitle = "ZoSwi AI";
+
+                if (hostDoc.head) {
+                    const existingManifestLinks = hostDoc.head.querySelectorAll('link[rel="manifest"]');
+                    existingManifestLinks.forEach((node) => {
+                        node.setAttribute("href", manifestHref);
+                        node.setAttribute("id", "zoswi-web-manifest");
+                    });
+
+                    const existingAppleTouchLinks = hostDoc.head.querySelectorAll('link[rel="apple-touch-icon"]');
+                    existingAppleTouchLinks.forEach((node) => {
+                        node.setAttribute("href", iconHref);
+                        node.setAttribute("sizes", "180x180");
+                        node.setAttribute("id", "zoswi-apple-touch-icon");
+                    });
+
+                    const existingIconLinks = hostDoc.head.querySelectorAll('link[rel="icon"], link[rel="shortcut icon"], link[rel="alternate icon"]');
+                    existingIconLinks.forEach((node) => {
+                        node.setAttribute("href", iconHref);
+                        node.setAttribute("type", "image/png");
+                    });
+                }
+
+                const defaultFaviconNode = hostDoc.head ? hostDoc.head.querySelector("#favicon") : null;
+                if (defaultFaviconNode) {
+                    defaultFaviconNode.setAttribute("href", iconHref);
+                    defaultFaviconNode.setAttribute("type", "image/png");
+                }
+                const alternateFaviconNode = hostDoc.head ? hostDoc.head.querySelector("#alternate-favicon") : null;
+                if (alternateFaviconNode) {
+                    alternateFaviconNode.setAttribute("href", iconHref);
+                    alternateFaviconNode.setAttribute("type", "image/png");
+                }
+
                 upsertHeadLink("zoswi-apple-touch-icon", "apple-touch-icon", iconHref, { sizes: "180x180" });
                 upsertHeadLink("zoswi-favicon", "icon", iconHref, { type: "image/png", sizes: "32x32" });
                 upsertHeadLink("zoswi-favicon-shortcut", "shortcut icon", iconHref, { type: "image/png" });
                 upsertHeadLink("zoswi-favicon-192", "icon", icon192, { type: "image/png", sizes: "192x192" });
                 upsertHeadLink("zoswi-favicon-512", "icon", icon512, { type: "image/png", sizes: "512x512" });
                 upsertHeadLink("zoswi-web-manifest", "manifest", manifestHref, {});
-                upsertHeadMeta("zoswi-mobile-web-title", "name", "apple-mobile-web-app-title", "ZoSwi AI");
-                upsertHeadMeta("zoswi-mobile-app-name", "name", "application-name", "ZoSwi AI");
+                upsertHeadMeta("zoswi-mobile-web-title", "name", "apple-mobile-web-app-title", appTitle);
+                upsertHeadMeta("zoswi-mobile-app-name", "name", "application-name", appTitle);
+                upsertHeadMeta("zoswi-mobile-capable", "name", "apple-mobile-web-app-capable", "yes");
+                upsertHeadMeta("zoswi-mobile-status-bar", "name", "apple-mobile-web-app-status-bar-style", "default");
                 upsertHeadMeta("zoswi-mobile-theme-color", "name", "theme-color", "#0f172a");
+                if (hostDoc.title !== appTitle) {
+                    hostDoc.title = appTitle;
+                }
             }
             function hideSubmitHints() {
                 const hintTexts = new Set([
